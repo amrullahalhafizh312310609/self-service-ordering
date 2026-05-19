@@ -1,4 +1,40 @@
 const STORAGE_KEY = "ss-ordering.v1";
+const DEBUG_SESSION_ID = "realtime-cross-device";
+
+//#region debug-point dbg-transport
+const dbgUrl = (() => {
+  try {
+    const qs = new URLSearchParams(location.search || "");
+    const fromQs = qs.get("dbg");
+    if (fromQs) return decodeURIComponent(fromQs);
+    const fromStore = sessionStorage.getItem("dbg.url");
+    if (fromStore) return fromStore;
+  } catch {}
+  return "";
+})();
+
+const dbgReport = async (point, data = {}, meta = {}) => {
+  if (!dbgUrl) return;
+  try {
+    sessionStorage.setItem("dbg.url", dbgUrl);
+  } catch {}
+  const payload = {
+    sessionId: DEBUG_SESSION_ID,
+    point,
+    ts: Date.now(),
+    ...meta,
+    data,
+  };
+  try {
+    await fetch(dbgUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    });
+  } catch {}
+};
+//#endregion debug-point dbg-transport
 
 const formatIdr = (value) =>
   new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 }).format(value || 0);
@@ -225,6 +261,19 @@ const playBeep = async () => {
 const isSoundEnabledForRole = (role) => Boolean(state.ui?.sound && state.ui.sound[role]);
 
 const initRealtime = async () => {
+  await dbgReport(
+    "initRealtime:start",
+    {
+      href: location.href,
+      role: state.auth?.role || "guest",
+      enabled: Boolean(realtimeConfig?.enabled),
+      provider: realtimeConfig?.provider || null,
+      projectId: realtimeConfig?.firebaseConfig?.projectId || null,
+      isRealtimeEnabled: isRealtimeEnabled(),
+      ua: navigator.userAgent,
+    },
+    { hypothesisId: "A", runId: "pre" }
+  );
   if (!isRealtimeEnabled()) return;
   try {
     const { initializeApp } = await import("https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js");
@@ -237,59 +286,86 @@ const initRealtime = async () => {
     realtime.fs = fs;
     renderNav();
     toast("Realtime aktif");
+    await dbgReport("initRealtime:ready", { ok: true }, { runId: "pre" });
 
-    const unsubMenu = fs.onSnapshot(fs.collection(db, "menu"), (snap) => {
-      const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-      state.menu = items.length ? items : state.menu;
-      render();
-    });
+    const unsubMenu = fs.onSnapshot(
+      fs.collection(db, "menu"),
+      (snap) => {
+        const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+        state.menu = items.length ? items : state.menu;
+        dbgReport("fs:menuSnapshot", { count: items.length }, { runId: "pre" });
+        render();
+      },
+      (err) => {
+        dbgReport("fs:menuSnapshot:error", { message: err?.message || String(err), code: err?.code || null }, { hypothesisId: "B", runId: "pre" });
+      }
+    );
 
     const ordersQ = fs.query(fs.collection(db, "orders"), fs.orderBy("createdAt", "desc"));
-    const unsubOrders = fs.onSnapshot(ordersQ, (snap) => {
-      const nextOrders = snap.docs.map((d) => {
-        const data = d.data() || {};
-        const kitchen = data.kitchen || {};
-        return {
-          id: d.id,
-          ...data,
-          createdAt: tsToIso(data.createdAt) || data.createdAt || nowIso(),
-          paidAt: tsToIso(data.paidAt),
-          deductedAt: tsToIso(data.deductedAt),
-          kitchen: {
-            printedAt: tsToIso(kitchen.printedAt),
-            startedAt: tsToIso(kitchen.startedAt),
-            doneAt: tsToIso(kitchen.doneAt),
-          },
-        };
-      });
+    const unsubOrders = fs.onSnapshot(
+      ordersQ,
+      (snap) => {
+        const nextOrders = snap.docs.map((d) => {
+          const data = d.data() || {};
+          const kitchen = data.kitchen || {};
+          return {
+            id: d.id,
+            ...data,
+            createdAt: tsToIso(data.createdAt) || data.createdAt || nowIso(),
+            paidAt: tsToIso(data.paidAt),
+            deductedAt: tsToIso(data.deductedAt),
+            kitchen: {
+              printedAt: tsToIso(kitchen.printedAt),
+              startedAt: tsToIso(kitchen.startedAt),
+              doneAt: tsToIso(kitchen.doneAt),
+            },
+          };
+        });
 
-      state.orders = nextOrders;
+        state.orders = nextOrders;
 
-      if (!realtime.initialOrdersLoaded) {
-        realtime.lastOrderIds = new Set(nextOrders.map((o) => o.id));
-        realtime.initialOrdersLoaded = true;
+        dbgReport("fs:ordersSnapshot", { count: nextOrders.length }, { runId: "pre" });
+
+        if (!realtime.initialOrdersLoaded) {
+          realtime.lastOrderIds = new Set(nextOrders.map((o) => o.id));
+          realtime.initialOrdersLoaded = true;
+          dbgReport("fs:ordersInitialLoaded", { count: nextOrders.length }, { runId: "pre" });
+          render();
+          return;
+        }
+
+        const role = state.auth.role || "guest";
+        const added = nextOrders.filter((o) => !realtime.lastOrderIds.has(o.id));
+        for (const o of added) realtime.lastOrderIds.add(o.id);
+
+        if (added.length) {
+          dbgReport("fs:ordersAdded", { addedCount: added.length, first: added[0]?.code || added[0]?.id || null, role }, { runId: "pre" });
+        }
+
+        if (added.length && (role === "cashier" || role === "kitchen") && isSoundEnabledForRole(role)) {
+          dbgReport("sound:newOrderBeep", { role }, { hypothesisId: "D", runId: "pre" });
+          playBeep();
+          toast(`Pesanan baru: ${added[0].code || added[0].id}`);
+        }
+
         render();
-        return;
+      },
+      (err) => {
+        dbgReport("fs:ordersSnapshot:error", { message: err?.message || String(err), code: err?.code || null }, { hypothesisId: "B", runId: "pre" });
       }
-
-      const role = state.auth.role || "guest";
-      const added = nextOrders.filter((o) => !realtime.lastOrderIds.has(o.id));
-      for (const o of added) realtime.lastOrderIds.add(o.id);
-
-      if (added.length && (role === "cashier" || role === "kitchen") && isSoundEnabledForRole(role)) {
-        playBeep();
-        toast(`Pesanan baru: ${added[0].code || added[0].id}`);
-      }
-
-      render();
-    });
+    );
 
     realtime.unsub.push(unsubMenu, unsubOrders);
-  } catch {
+  } catch (err) {
     realtime.enabled = false;
     realtime.ready = false;
     renderNav();
     toast("Realtime gagal aktif");
+    await dbgReport(
+      "initRealtime:error",
+      { ok: false, message: err?.message || String(err), name: err?.name || null },
+      { hypothesisId: "C", runId: "pre" }
+    );
   }
 };
 
@@ -297,6 +373,7 @@ const rtUpdateOrder = async (orderId, patch) => {
   if (!realtime.ready) return false;
   const fs = realtime.fs;
   const db = realtime.db;
+  dbgReport("rt:updateOrder", { orderId, keys: Object.keys(patch || {}) }, { runId: "pre" });
   await fs.updateDoc(fs.doc(db, "orders", orderId), { ...patch, updatedAt: fs.serverTimestamp() });
   return true;
 };
@@ -305,6 +382,7 @@ const rtUpdateMenu = async (menuId, patch) => {
   if (!realtime.ready) return false;
   const fs = realtime.fs;
   const db = realtime.db;
+  dbgReport("rt:updateMenu", { menuId, keys: Object.keys(patch || {}) }, { runId: "pre" });
   await fs.updateDoc(fs.doc(db, "menu", menuId), { ...patch, updatedAt: fs.serverTimestamp() });
   return true;
 };
@@ -313,6 +391,7 @@ const rtSetMenu = async (menu) => {
   if (!realtime.ready) return false;
   const fs = realtime.fs;
   const db = realtime.db;
+  dbgReport("rt:setMenu", { menuId: menu?.id || null }, { runId: "pre" });
   await fs.setDoc(fs.doc(db, "menu", menu.id), { ...menu, updatedAt: fs.serverTimestamp() }, { merge: true });
   return true;
 };
@@ -321,6 +400,7 @@ const rtSeedMenu = async () => {
   if (!realtime.ready) return false;
   const fs = realtime.fs;
   const db = realtime.db;
+  dbgReport("rt:seedMenu", { count: defaultMenu().length }, { runId: "pre" });
   const batch = fs.writeBatch(db);
   for (const m of defaultMenu()) {
     batch.set(fs.doc(db, "menu", m.id), { ...m, updatedAt: fs.serverTimestamp() }, { merge: true });
@@ -333,6 +413,7 @@ const rtCreateOrder = async (order) => {
   if (!realtime.ready) return { ok: false, issues: ["Realtime belum siap"] };
   const fs = realtime.fs;
   const db = realtime.db;
+  dbgReport("rt:createOrder:start", { id: order?.id || null, code: order?.code || null }, { hypothesisId: "E", runId: "pre" });
   const needed = new Map();
   for (const line of order.items || []) needed.set(line.menuId, (needed.get(line.menuId) || 0) + line.qty);
   try {
@@ -347,8 +428,10 @@ const rtCreateOrder = async (order) => {
       const orderRef = fs.doc(db, "orders", order.id);
       tx.set(orderRef, { ...order, stockDeducted: true, deductedAt: fs.serverTimestamp(), createdAt: fs.serverTimestamp(), updatedAt: fs.serverTimestamp() });
     });
+    dbgReport("rt:createOrder:ok", { id: order?.id || null }, { runId: "pre" });
     return { ok: true, issues: [] };
   } catch (e) {
+    dbgReport("rt:createOrder:error", { message: e?.message || String(e) }, { hypothesisId: "B", runId: "pre" });
     return { ok: false, issues: [e?.message || "Gagal membuat pesanan"] };
   }
 };
@@ -2113,8 +2196,10 @@ document.addEventListener("click", async (e) => {
     if (!prev) {
       await ensureSound();
       playBeep();
+      dbgReport("sound:enabled", { role, audioState: audioCtx?.state || null }, { hypothesisId: "D", runId: "pre" });
       toast("Suara notifikasi aktif");
     } else {
+      dbgReport("sound:disabled", { role }, { hypothesisId: "D", runId: "pre" });
       toast("Suara notifikasi mati");
     }
     return;
