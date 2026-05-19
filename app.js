@@ -235,6 +235,8 @@ const initRealtime = async () => {
     realtime.ready = true;
     realtime.db = db;
     realtime.fs = fs;
+    renderNav();
+    toast("Realtime aktif");
 
     const unsubMenu = fs.onSnapshot(fs.collection(db, "menu"), (snap) => {
       const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
@@ -286,6 +288,8 @@ const initRealtime = async () => {
   } catch {
     realtime.enabled = false;
     realtime.ready = false;
+    renderNav();
+    toast("Realtime gagal aktif");
   }
 };
 
@@ -718,7 +722,8 @@ const renderNav = () => {
   const method = state.session.method === "dinein" ? `Dine-In · Meja ${state.session.tableNumber || "-"}` : "Takeaway";
   const subtitleRole = role === "guest" ? "Pelanggan" : role.toUpperCase();
   const subtitleMethod = state.session.method ? method : "Belum pilih metode";
-  $subtitle.textContent = role === "guest" ? `${subtitleRole} · ${subtitleMethod}` : subtitleRole;
+  const rtLabel = realtime.ready ? "Realtime: On" : "Realtime: Off";
+  $subtitle.textContent = role === "guest" ? `${subtitleRole} · ${subtitleMethod} · ${rtLabel}` : `${subtitleRole} · ${rtLabel}`;
 };
 
 const renderHome = () => {
@@ -2520,4 +2525,7 @@ window.addEventListener("storage", (e) => {
 
 if (!location.hash) location.hash = "#/";
 render();
+if (!isRealtimeEnabled()) {
+  toast("Mode lokal: antar perangkat tidak sinkron");
+}
 initRealtime();
