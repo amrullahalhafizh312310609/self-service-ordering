@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7c3aed"/>
+      <stop offset="1" stop-color="#0ea5e9"/>
+    </linearGradient>
+    <filter id="noise" x="-20%" y="-20%" width="140%" height="140%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch" />
+      <feColorMatrix type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 .12 0"/>
+    </filter>
+  </defs>
+  <rect width="640" height="480" fill="url(#bg)"/>
+  <rect width="640" height="480" filter="url(#noise)" opacity="0.45"/>
+  <rect x="28" y="28" width="584" height="424" rx="30" fill="rgba(11,18,32,0.40)" stroke="rgba(255,255,255,0.22)"/>
+  <g transform="translate(72 102)">
+    <rect x="0" y="0" width="496" height="276" rx="26" fill="rgba(255,255,255,0.10)"/>
+    <circle cx="150" cy="138" r="96" fill="rgba(245,158,11,0.35)"/>
+    <circle cx="200" cy="150" r="74" fill="rgba(239,68,68,0.28)"/>
+    <circle cx="330" cy="132" r="86" fill="rgba(34,197,94,0.22)"/>
+    <g fill="rgba(255,255,255,0.88)" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial">
+      <text x="248" y="322" font-size="30" font-weight="800" text-anchor="middle">Ayam Geprek</text>
+      <text x="248" y="350" font-size="14" fill="rgba(255,255,255,0.65)" text-anchor="middle">Foto (ilustrasi)</text>
+    </g>
+  </g>
+</svg>

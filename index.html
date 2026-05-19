@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="id">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Self-Service Ordering</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar__brand">
+        <div class="brand__title">Self-Service Ordering</div>
+        <div class="brand__subtitle" id="subtitle"></div>
+      </div>
+      <nav class="topbar__nav" id="topnav"></nav>
+    </header>
+
+    <main class="container">
+      <div id="app"></div>
+    </main>
+
+    <div class="toast" id="toast" aria-live="polite" aria-atomic="true"></div>
+
+    <script>
+      window.APP_CONFIG = {
+        realtime: {
+          provider: "firebase",
+          enabled: false,
+          firebaseConfig: {
+            apiKey: "",
+            authDomain: "",
+            projectId: "",
+            storageBucket: "",
+            messagingSenderId: "",
+            appId: "",
+          },
+        },
+      };
+    </script>
+    <script src="./app.js" type="module"></script>
+  </body>
+</html>
