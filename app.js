@@ -89,6 +89,114 @@ const imageFileToDataUrl = async (file, { maxSide = 900, quality = 0.82 } = {}) 
   }
 };
 
+const GH_TOKEN_KEY = "gh.token";
+const getGithubToken = () => {
+  try {
+    return `${sessionStorage.getItem(GH_TOKEN_KEY) || ""}`.trim();
+  } catch {
+    return "";
+  }
+};
+const setGithubToken = (token) => {
+  try {
+    const t = `${token || ""}`.trim();
+    if (!t) sessionStorage.removeItem(GH_TOKEN_KEY);
+    else sessionStorage.setItem(GH_TOKEN_KEY, t);
+  } catch {}
+};
+
+const encodeGithubPath = (path) =>
+  `${path || ""}`
+    .split("/")
+    .filter(Boolean)
+    .map((s) => encodeURIComponent(s))
+    .join("/");
+
+const githubGetFileSha = async ({ owner, repo, branch, path, token }) => {
+  const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodeGithubPath(path)}?ref=${encodeURIComponent(
+    branch || "main"
+  )}`;
+  const res = await fetch(url, {
+    headers: {
+      Accept: "application/vnd.github+json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error("Gagal cek file GitHub");
+  const json = await res.json();
+  return json?.sha || null;
+};
+
+const githubPutFile = async ({ owner, repo, branch, path, contentBase64, message, token }) => {
+  const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodeGithubPath(path)}`;
+  const sha = await githubGetFileSha({ owner, repo, branch, path, token });
+  const body = {
+    message: message || `Update ${path}`,
+    content: `${contentBase64 || ""}`.replace(/\s+/g, ""),
+    branch: branch || "main",
+    ...(sha ? { sha } : {}),
+  };
+  const res = await fetch(url, {
+    method: "PUT",
+    headers: {
+      Accept: "application/vnd.github+json",
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error("Upload ke GitHub gagal");
+  return res.json();
+};
+
+const githubSettings = () => {
+  const g = state?.settings?.github || {};
+  return {
+    enabled: Boolean(g.enabled),
+    owner: `${g.owner || ""}`.trim(),
+    repo: `${g.repo || ""}`.trim(),
+    branch: `${g.branch || "main"}`.trim() || "main",
+  };
+};
+
+const sanitizeAssetFileName = (raw) => {
+  const base = `${raw || ""}`.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  return `${base || "image"}.jpg`;
+};
+
+const uploadMenuImageToGithubAssetsIfEnabled = async ({ menuId, dataUrl }) => {
+  const cfg = githubSettings();
+  if (!cfg.enabled) return { ok: false, reason: "disabled" };
+  if (!cfg.owner || !cfg.repo) return { ok: false, reason: "missing_repo" };
+  const token = getGithubToken();
+  if (!token) return { ok: false, reason: "missing_token" };
+  const base64 = `${dataUrl || ""}`.includes(",") ? `${dataUrl || ""}`.split(",")[1] : "";
+  if (!base64) return { ok: false, reason: "bad_data" };
+  const fileName = sanitizeAssetFileName(`menu-${menuId}`);
+  const path = `assets/${fileName}`;
+  await githubPutFile({
+    owner: cfg.owner,
+    repo: cfg.repo,
+    branch: cfg.branch,
+    path,
+    contentBase64: base64,
+    message: `Update image ${menuId}`,
+    token,
+  });
+  return { ok: true, assetPath: `./assets/${fileName}?v=${Date.now()}` };
+};
+
+const imageUrlToDataUrl = async (url) => {
+  const u = `${url || ""}`.trim();
+  if (!/^https?:\/\//i.test(u)) throw new Error("URL gambar tidak valid");
+  const res = await fetch(u, { mode: "cors", cache: "no-store" });
+  if (!res.ok) throw new Error("Gagal mengambil gambar dari URL");
+  const blob = await res.blob();
+  const file = new File([blob], "image", { type: blob.type || "image/jpeg" });
+  return imageFileToDataUrl(file);
+};
+
 const uid = () => {
   const raw = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   return raw.toUpperCase();
@@ -174,6 +282,9 @@ const loadState = () => {
         adminImageMenuId: null,
         sound: { cashier: false, kitchen: false },
       },
+      settings: {
+        github: { enabled: false, owner: "", repo: "", branch: "main" },
+      },
     };
   }
   try {
@@ -211,6 +322,10 @@ const loadState = () => {
         adminImageMenuId: null,
         sound: { cashier: false, kitchen: false },
         ...(parsed.ui || {}),
+      },
+      settings: {
+        github: { enabled: false, owner: "", repo: "", branch: "main" },
+        ...(parsed.settings || {}),
       },
     };
   } catch {
@@ -1584,6 +1699,9 @@ const renderAdmin = () => {
     return "";
   }
 
+  const gh = githubSettings();
+  const ghTokenSet = Boolean(getGithubToken());
+
   const imageEditing = state.ui.adminImageMenuId ? menuById(state.ui.adminImageMenuId) : null;
   const imageModal = imageEditing
     ? `
@@ -1724,6 +1842,49 @@ const renderAdmin = () => {
               <div class="kpi__value">${kpi.unpaidOrders}</div>
             </div>
           </div>
+          <div class="sep"></div>
+          <form class="card" data-form="github-assets">
+            <div class="card__hd">
+              <div>
+                <div class="card__title">Upload Gambar ke GitHub Assets (opsional)</div>
+                <div class="card__sub">Agar gambar benar-benar masuk folder assets di repo GitHub.</div>
+              </div>
+              <span class="badge ${ghTokenSet ? "badge--ok" : "badge--warn"}">${ghTokenSet ? "Token tersimpan (session)" : "Token belum ada"}</span>
+            </div>
+            <div class="card__bd">
+              <div class="row">
+                <div class="field" style="flex:0 0 auto;min-width:220px">
+                  <label>Aktifkan</label>
+                  <label style="display:flex;gap:10px;align-items:center">
+                    <input type="checkbox" name="enabled" ${gh.enabled ? "checked" : ""} />
+                    <span class="badge">${gh.enabled ? "On" : "Off"}</span>
+                  </label>
+                </div>
+                <div class="field" style="flex:1;min-width:220px">
+                  <label>Owner</label>
+                  <input class="input" name="owner" placeholder="username" value="${escapeHtml(gh.owner)}" />
+                </div>
+                <div class="field" style="flex:1;min-width:220px">
+                  <label>Repo</label>
+                  <input class="input" name="repo" placeholder="nama-repo" value="${escapeHtml(gh.repo)}" />
+                </div>
+                <div class="field" style="flex:0 0 auto;min-width:160px">
+                  <label>Branch</label>
+                  <input class="input" name="branch" placeholder="main" value="${escapeHtml(gh.branch)}" />
+                </div>
+              </div>
+              <div class="row">
+                <div class="field" style="flex:1;min-width:220px">
+                  <label>Token (tidak disimpan permanen)</label>
+                  <input class="input" name="token" type="password" placeholder="${ghTokenSet ? "Biarkan kosong untuk tetap pakai token yang ada" : "ghp_..."}" />
+                </div>
+              </div>
+              <div class="row">
+                <button class="btn btn--primary" type="submit">Simpan</button>
+                <button class="btn btn--danger" type="button" data-action="github-clear-token">Hapus Token</button>
+              </div>
+            </div>
+          </form>
           <div class="sep"></div>
           <form class="card" data-form="create-menu">
             <div class="card__hd">
@@ -2763,12 +2924,26 @@ document.addEventListener("click", async (e) => {
     const url = urlEl instanceof HTMLInputElement ? `${urlEl.value || ""}`.trim() : "";
     const file = fileEl instanceof HTMLInputElement ? fileEl.files?.[0] || null : null;
 
+    const cfg = githubSettings();
     let image = url;
+    let dataUrl = "";
     try {
-      if (file) image = await imageFileToDataUrl(file);
+      if (file) dataUrl = await imageFileToDataUrl(file);
+      else if (url && cfg.enabled) dataUrl = await imageUrlToDataUrl(url);
     } catch (err) {
       toast(err?.message || "Gagal memproses gambar");
       return;
+    }
+
+    if (dataUrl) {
+      try {
+        const up = await uploadMenuImageToGithubAssetsIfEnabled({ menuId: m.id, dataUrl });
+        if (up.ok) image = up.assetPath;
+        else image = dataUrl;
+      } catch {
+        image = dataUrl;
+        toast("Upload ke GitHub gagal, pakai gambar lokal dulu");
+      }
     }
 
     if (!image) {
@@ -2782,6 +2957,13 @@ document.addEventListener("click", async (e) => {
     saveState(state);
     render();
     toast("Gambar diperbarui");
+    return;
+  }
+
+  if (action === "github-clear-token") {
+    setGithubToken("");
+    toast("Token dihapus");
+    render();
     return;
   }
 
@@ -2991,12 +3173,25 @@ document.addEventListener("submit", async (e) => {
 
     const base = name.replace(/[^a-z0-9]+/gi, "").toUpperCase().slice(0, 16) || "MENU";
     const id = `M-${base}-${Math.random().toString(36).slice(2, 5).toUpperCase()}`;
+    const cfg = githubSettings();
     let image = imageUrl;
+    let dataUrl = "";
     try {
-      if (imageFile) image = await imageFileToDataUrl(imageFile);
+      if (imageFile) dataUrl = await imageFileToDataUrl(imageFile);
+      else if (imageUrl && cfg.enabled) dataUrl = await imageUrlToDataUrl(imageUrl);
     } catch (err) {
       toast(err?.message || "Gagal memproses gambar");
       return;
+    }
+    if (dataUrl) {
+      try {
+        const up = await uploadMenuImageToGithubAssetsIfEnabled({ menuId: id, dataUrl });
+        if (up.ok) image = up.assetPath;
+        else image = dataUrl;
+      } catch {
+        image = dataUrl;
+        toast("Upload ke GitHub gagal, pakai gambar lokal dulu");
+      }
     }
     const menu = { id, name, category, price: Math.round(price), stock: Math.round(stock), variants, ...(image ? { image } : {}) };
     state.menu.push(menu);
@@ -3005,6 +3200,25 @@ document.addEventListener("submit", async (e) => {
     form.reset();
     render();
     toast("Menu ditambahkan");
+    return;
+  }
+
+  if (type === "github-assets") {
+    const enabled = Boolean(form.enabled?.checked);
+    const owner = `${form.owner?.value || ""}`.trim();
+    const repo = `${form.repo?.value || ""}`.trim();
+    const branch = `${form.branch?.value || ""}`.trim() || "main";
+    const token = `${form.token?.value || ""}`.trim();
+
+    state.settings = {
+      ...(state.settings || {}),
+      github: { enabled, owner, repo, branch },
+    };
+    if (token) setGithubToken(token);
+    saveState(state);
+    form.token.value = "";
+    render();
+    toast("Pengaturan GitHub disimpan");
     return;
   }
 
