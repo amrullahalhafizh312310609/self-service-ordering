@@ -285,6 +285,7 @@ const realtime = {
   unsub: [],
   lastOrderIds: new Set(),
   initialOrdersLoaded: false,
+  lastError: "",
 };
 
 const isRealtimeEnabled = () => {
@@ -342,6 +343,7 @@ const stopRealtime = () => {
   realtime.fs = null;
   realtime.lastOrderIds = new Set();
   realtime.initialOrdersLoaded = false;
+  realtime.lastError = "";
 };
 
 const initRealtime = async () => {
@@ -360,7 +362,11 @@ const initRealtime = async () => {
     },
     { hypothesisId: "A", runId: "pre" }
   );
-  if (!isRealtimeEnabled()) return;
+  if (!isRealtimeEnabled()) {
+    realtime.lastError = cfg?.enabled ? "Config Firebase belum lengkap (projectId wajib)" : "Realtime belum diaktifkan";
+    renderNav();
+    return;
+  }
   try {
     const { initializeApp } = await import("https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js");
     const fs = await import("https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js");
@@ -370,6 +376,7 @@ const initRealtime = async () => {
     realtime.ready = true;
     realtime.db = db;
     realtime.fs = fs;
+    realtime.lastError = "";
     renderNav();
     toast("Realtime aktif");
     await dbgReport("initRealtime:ready", { ok: true }, { runId: "pre" });
@@ -386,6 +393,7 @@ const initRealtime = async () => {
         render();
       },
       (err) => {
+        realtime.lastError = err?.message || String(err);
         dbgReport("fs:menuSnapshot:error", { message: err?.message || String(err), code: err?.code || null }, { hypothesisId: "B", runId: "pre" });
       }
     );
@@ -440,6 +448,7 @@ const initRealtime = async () => {
         render();
       },
       (err) => {
+        realtime.lastError = err?.message || String(err);
         dbgReport("fs:ordersSnapshot:error", { message: err?.message || String(err), code: err?.code || null }, { hypothesisId: "B", runId: "pre" });
       }
     );
@@ -448,6 +457,7 @@ const initRealtime = async () => {
   } catch (err) {
     realtime.enabled = false;
     realtime.ready = false;
+    realtime.lastError = err?.message || String(err);
     renderNav();
     toast("Realtime gagal aktif");
     await dbgReport(
@@ -1193,7 +1203,9 @@ const renderNav = () => {
   const subtitleRole = role === "guest" ? "Pelanggan" : role.toUpperCase();
   const subtitleMethod = state.session.method ? method : "Belum pilih metode";
   const rtLabel = realtime.ready ? "Realtime: On" : "Realtime: Off";
-  $subtitle.textContent = role === "guest" ? `${subtitleRole} · ${subtitleMethod} · ${rtLabel}` : `${subtitleRole} · ${rtLabel}`;
+  const rtHint = !realtime.ready && realtime.lastError ? ` (${realtime.lastError})` : "";
+  $subtitle.textContent =
+    role === "guest" ? `${subtitleRole} · ${subtitleMethod} · ${rtLabel}${rtHint}` : `${subtitleRole} · ${rtLabel}${rtHint}`;
 };
 
 const renderHome = () => {
