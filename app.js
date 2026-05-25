@@ -270,6 +270,7 @@ const realtime = {
   lastOrderIds: new Set(),
   initialOrdersLoaded: false,
   lastError: "",
+  didAutoSeedMenu: false,
 };
 
 const isRealtimeEnabled = () =>
@@ -332,6 +333,7 @@ const stopRealtime = () => {
   realtime.lastOrderIds = new Set();
   realtime.initialOrdersLoaded = false;
   realtime.lastError = "";
+  realtime.didAutoSeedMenu = false;
 };
 
 const initRealtime = async () => {
@@ -376,7 +378,23 @@ const initRealtime = async () => {
         state.menu = items.length ? items : state.menu;
         dbgReport("fs:menuSnapshot", { count: items.length }, { runId: "pre" });
         if (!items.length) {
-          toast("Menu server kosong. Masuk Admin → Reset Menu Default.");
+          if (!realtime.didAutoSeedMenu) {
+            realtime.didAutoSeedMenu = true;
+            const source = Array.isArray(state.menu) && state.menu.length ? state.menu : defaultMenu();
+            (async () => {
+              try {
+                const batch = fs.writeBatch(db);
+                for (const m of source) {
+                  if (!m?.id) continue;
+                  batch.set(fs.doc(db, "menu", m.id), { ...m, updatedAt: fs.serverTimestamp() }, { merge: true });
+                }
+                await batch.commit();
+                toast("Menu otomatis disiapkan");
+              } catch (e) {
+                toast(e?.message ? `Gagal menyiapkan menu: ${e.message}` : "Gagal menyiapkan menu");
+              }
+            })();
+          }
         }
         render();
       },
@@ -514,16 +532,24 @@ const rtCreateOrder = async (order) => {
   for (const line of order.items || []) needed.set(line.menuId, (needed.get(line.menuId) || 0) + line.qty);
   try {
     await fs.runTransaction(db, async (tx) => {
+      const reads = [];
       for (const [menuId, qty] of needed.entries()) {
         const ref = fs.doc(db, "menu", menuId);
-        const snap = await tx.get(ref);
-        if (!snap.exists()) {
-          throw new Error(`Menu ${menuId} belum ada di server. Buka Admin → Reset Menu Default (seed).`);
-        }
+        reads.push({ menuId, qty, ref });
+      }
+      const snaps = await Promise.all(reads.map((r) => tx.get(r.ref)));
+      const nextStock = new Map();
+      for (let i = 0; i < reads.length; i += 1) {
+        const r = reads[i];
+        const snap = snaps[i];
+        if (!snap.exists()) throw new Error(`Menu ${r.menuId} belum ada di server`);
         const rawStock = snap.data()?.stock;
         const stock = Number.isFinite(Number(rawStock)) ? Number(rawStock) : 0;
-        if (qty > stock) throw new Error(`${menuId} stok kurang`);
-        tx.update(ref, { stock: stock - qty, updatedAt: fs.serverTimestamp() });
+        if (r.qty > stock) throw new Error(`${r.menuId} stok kurang`);
+        nextStock.set(r.menuId, stock - r.qty);
+      }
+      for (const r of reads) {
+        tx.update(r.ref, { stock: Number(nextStock.get(r.menuId) || 0), updatedAt: fs.serverTimestamp() });
       }
       const orderRef = fs.doc(db, "orders", order.id);
       tx.set(orderRef, { ...order, stockDeducted: true, deductedAt: fs.serverTimestamp(), createdAt: fs.serverTimestamp(), updatedAt: fs.serverTimestamp() });
@@ -549,11 +575,17 @@ const rtCancelOrder = async (orderId) => {
     if (order.stockDeducted) {
       const needed = new Map();
       for (const line of order.items || []) needed.set(line.menuId, (needed.get(line.menuId) || 0) + line.qty);
+      const reads = [];
       for (const [menuId, qty] of needed.entries()) {
         const ref = fs.doc(db, "menu", menuId);
-        const ms = await tx.get(ref);
+        reads.push({ menuId, qty, ref });
+      }
+      const snaps = await Promise.all(reads.map((r) => tx.get(r.ref)));
+      for (let i = 0; i < reads.length; i += 1) {
+        const r = reads[i];
+        const ms = snaps[i];
         const stock = Number(ms.data()?.stock ?? 0);
-        tx.update(ref, { stock: stock + qty, updatedAt: fs.serverTimestamp() });
+        tx.update(r.ref, { stock: stock + r.qty, updatedAt: fs.serverTimestamp() });
       }
     }
     tx.update(orderRef, { status: "CANCELLED", stockDeducted: false, deductedAt: null, updatedAt: fs.serverTimestamp() });
