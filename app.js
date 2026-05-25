@@ -89,114 +89,6 @@ const imageFileToDataUrl = async (file, { maxSide = 900, quality = 0.82 } = {}) 
   }
 };
 
-const GH_TOKEN_KEY = "gh.token";
-const getGithubToken = () => {
-  try {
-    return `${sessionStorage.getItem(GH_TOKEN_KEY) || ""}`.trim();
-  } catch {
-    return "";
-  }
-};
-const setGithubToken = (token) => {
-  try {
-    const t = `${token || ""}`.trim();
-    if (!t) sessionStorage.removeItem(GH_TOKEN_KEY);
-    else sessionStorage.setItem(GH_TOKEN_KEY, t);
-  } catch {}
-};
-
-const encodeGithubPath = (path) =>
-  `${path || ""}`
-    .split("/")
-    .filter(Boolean)
-    .map((s) => encodeURIComponent(s))
-    .join("/");
-
-const githubGetFileSha = async ({ owner, repo, branch, path, token }) => {
-  const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodeGithubPath(path)}?ref=${encodeURIComponent(
-    branch || "main"
-  )}`;
-  const res = await fetch(url, {
-    headers: {
-      Accept: "application/vnd.github+json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  });
-  if (res.status === 404) return null;
-  if (!res.ok) throw new Error("Gagal cek file GitHub");
-  const json = await res.json();
-  return json?.sha || null;
-};
-
-const githubPutFile = async ({ owner, repo, branch, path, contentBase64, message, token }) => {
-  const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodeGithubPath(path)}`;
-  const sha = await githubGetFileSha({ owner, repo, branch, path, token });
-  const body = {
-    message: message || `Update ${path}`,
-    content: `${contentBase64 || ""}`.replace(/\s+/g, ""),
-    branch: branch || "main",
-    ...(sha ? { sha } : {}),
-  };
-  const res = await fetch(url, {
-    method: "PUT",
-    headers: {
-      Accept: "application/vnd.github+json",
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error("Upload ke GitHub gagal");
-  return res.json();
-};
-
-const githubSettings = () => {
-  const g = state?.settings?.github || {};
-  return {
-    enabled: Boolean(g.enabled),
-    owner: `${g.owner || ""}`.trim(),
-    repo: `${g.repo || ""}`.trim(),
-    branch: `${g.branch || "main"}`.trim() || "main",
-  };
-};
-
-const sanitizeAssetFileName = (raw) => {
-  const base = `${raw || ""}`.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
-  return `${base || "image"}.jpg`;
-};
-
-const uploadMenuImageToGithubAssetsIfEnabled = async ({ menuId, dataUrl }) => {
-  const cfg = githubSettings();
-  if (!cfg.enabled) return { ok: false, reason: "disabled" };
-  if (!cfg.owner || !cfg.repo) return { ok: false, reason: "missing_repo" };
-  const token = getGithubToken();
-  if (!token) return { ok: false, reason: "missing_token" };
-  const base64 = `${dataUrl || ""}`.includes(",") ? `${dataUrl || ""}`.split(",")[1] : "";
-  if (!base64) return { ok: false, reason: "bad_data" };
-  const fileName = sanitizeAssetFileName(`menu-${menuId}`);
-  const path = `assets/${fileName}`;
-  await githubPutFile({
-    owner: cfg.owner,
-    repo: cfg.repo,
-    branch: cfg.branch,
-    path,
-    contentBase64: base64,
-    message: `Update image ${menuId}`,
-    token,
-  });
-  return { ok: true, assetPath: `./assets/${fileName}?v=${Date.now()}` };
-};
-
-const imageUrlToDataUrl = async (url) => {
-  const u = `${url || ""}`.trim();
-  if (!/^https?:\/\//i.test(u)) throw new Error("URL gambar tidak valid");
-  const res = await fetch(u, { mode: "cors", cache: "no-store" });
-  if (!res.ok) throw new Error("Gagal mengambil gambar dari URL");
-  const blob = await res.blob();
-  const file = new File([blob], "image", { type: blob.type || "image/jpeg" });
-  return imageFileToDataUrl(file);
-};
-
 const uid = () => {
   const raw = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   return raw.toUpperCase();
@@ -282,9 +174,6 @@ const loadState = () => {
         adminImageMenuId: null,
         sound: { cashier: false, kitchen: false },
       },
-      settings: {
-        github: { enabled: false, owner: "", repo: "", branch: "main" },
-      },
     };
   }
   try {
@@ -322,10 +211,6 @@ const loadState = () => {
         adminImageMenuId: null,
         sound: { cashier: false, kitchen: false },
         ...(parsed.ui || {}),
-      },
-      settings: {
-        github: { enabled: false, owner: "", repo: "", branch: "main" },
-        ...(parsed.settings || {}),
       },
     };
   } catch {
@@ -716,6 +601,220 @@ const orderTotals = (order) => {
   const subtotal = (order.items || []).reduce((sum, line) => sum + line.price * line.qty, 0);
   const itemsCount = (order.items || []).reduce((sum, line) => sum + line.qty, 0);
   return { subtotal, itemsCount };
+};
+
+const toLocalDayKey = (isoLike) => {
+  const d = new Date(isoLike || "");
+  const t = d.getTime();
+  if (!Number.isFinite(t)) return "";
+  const y = d.getFullYear();
+  const m = `${d.getMonth() + 1}`.padStart(2, "0");
+  const day = `${d.getDate()}`.padStart(2, "0");
+  return `${y}-${m}-${day}`;
+};
+
+const toLocalMonthKey = (isoLike) => {
+  const d = new Date(isoLike || "");
+  const t = d.getTime();
+  if (!Number.isFinite(t)) return "";
+  const y = d.getFullYear();
+  const m = `${d.getMonth() + 1}`.padStart(2, "0");
+  return `${y}-${m}`;
+};
+
+const toLocalYearKey = (isoLike) => {
+  const d = new Date(isoLike || "");
+  const t = d.getTime();
+  if (!Number.isFinite(t)) return "";
+  return `${d.getFullYear()}`;
+};
+
+const lastNDaysKeys = (n, endDate = new Date()) => {
+  const out = [];
+  for (let i = n - 1; i >= 0; i -= 1) {
+    const d = new Date(endDate);
+    d.setDate(d.getDate() - i);
+    const y = d.getFullYear();
+    const m = `${d.getMonth() + 1}`.padStart(2, "0");
+    const day = `${d.getDate()}`.padStart(2, "0");
+    out.push(`${y}-${m}-${day}`);
+  }
+  return out;
+};
+
+const lastNMonthsKeys = (n, endDate = new Date()) => {
+  const out = [];
+  const base = new Date(endDate);
+  base.setDate(1);
+  for (let i = n - 1; i >= 0; i -= 1) {
+    const d = new Date(base);
+    d.setMonth(d.getMonth() - i);
+    const y = d.getFullYear();
+    const m = `${d.getMonth() + 1}`.padStart(2, "0");
+    out.push(`${y}-${m}`);
+  }
+  return out;
+};
+
+const lastNYearsKeys = (n, endDate = new Date()) => {
+  const out = [];
+  const y0 = endDate.getFullYear();
+  for (let i = n - 1; i >= 0; i -= 1) out.push(`${y0 - i}`);
+  return out;
+};
+
+const shortDayLabel = (dayKey) => {
+  const [y, m, d] = `${dayKey || ""}`.split("-").map((x) => Number(x));
+  if (!y || !m || !d) return "";
+  const dt = new Date(y, m - 1, d);
+  return dt.toLocaleDateString("id-ID", { day: "2-digit", month: "short" });
+};
+
+const shortMonthLabel = (monthKey) => {
+  const [y, m] = `${monthKey || ""}`.split("-").map((x) => Number(x));
+  if (!y || !m) return "";
+  const dt = new Date(y, m - 1, 1);
+  return dt.toLocaleDateString("id-ID", { month: "short", year: "numeric" });
+};
+
+const xmlEscape = (value) =>
+  `${value ?? ""}`.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+
+const excelXmlWorkbook = (sheets, fileNameBase = "laporan") => {
+  const safeSheets = Array.isArray(sheets) ? sheets : [];
+  const wb = `<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+${safeSheets
+  .map((s) => {
+    const name = xmlEscape((s && s.name) || "Sheet1").slice(0, 31);
+    const rows = Array.isArray(s?.rows) ? s.rows : [];
+    const table = rows
+      .map((r) => {
+        const cells = (Array.isArray(r) ? r : []).map((c) => {
+          const isNum = typeof c === "number" && Number.isFinite(c);
+          const type = isNum ? "Number" : "String";
+          const v = isNum ? `${c}` : xmlEscape(`${c ?? ""}`);
+          return `<Cell><Data ss:Type="${type}">${v}</Data></Cell>`;
+        });
+        return `<Row>${cells.join("")}</Row>`;
+      })
+      .join("");
+    return `<Worksheet ss:Name="${name}"><Table>${table}</Table></Worksheet>`;
+  })
+  .join("")}
+</Workbook>`;
+
+  const blob = new Blob([wb], { type: "application/vnd.ms-excel;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const today = toLocalDayKey(nowIso()) || "report";
+  a.href = url;
+  a.download = `${fileNameBase}-${today}.xls`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+};
+
+const svgLineChart = ({ labels, values, height = 180 } = {}) => {
+  const w = 600;
+  const h = Math.max(120, Number(height || 180));
+  const padL = 44;
+  const padR = 12;
+  const padT = 12;
+  const padB = 36;
+  const n = Array.isArray(values) ? values.length : 0;
+  if (!n) return `<div class="muted">Belum ada data.</div>`;
+
+  const safe = values.map((v) => (Number.isFinite(Number(v)) ? Number(v) : 0));
+  const maxV = Math.max(0, ...safe);
+  const minV = 0;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+  const xAt = (i) => padL + (n === 1 ? plotW / 2 : (i * plotW) / (n - 1));
+  const yAt = (v) => padT + (maxV === minV ? plotH / 2 : plotH - ((v - minV) / (maxV - minV)) * plotH);
+
+  const pts = safe.map((v, i) => `${xAt(i).toFixed(2)},${yAt(v).toFixed(2)}`).join(" ");
+  const last = safe[n - 1] || 0;
+  const first = safe[0] || 0;
+  const delta = last - first;
+  const deltaText = `${delta >= 0 ? "+" : ""}${formatIdr(delta)}`;
+
+  const ticks = 4;
+  const grid = Array.from({ length: ticks + 1 }, (_, i) => {
+    const y = padT + (plotH * i) / ticks;
+    return `<line x1="${padL}" y1="${y}" x2="${w - padR}" y2="${y}" stroke="rgba(31,41,55,0.10)" stroke-width="1" />`;
+  }).join("");
+
+  const yLabelTop = maxV ? formatIdr(maxV) : formatIdr(0);
+  const yLabelMid = maxV ? formatIdr(Math.round(maxV / 2)) : formatIdr(0);
+  const yLabelBot = formatIdr(0);
+
+  const labelIdx = n <= 8 ? [...Array(n).keys()] : [0, Math.floor((n - 1) / 2), n - 1];
+  const xLabels = labelIdx
+    .map((i) => {
+      const x = xAt(i);
+      const txt = escapeHtml((labels && labels[i]) || "");
+      return `<text x="${x}" y="${h - 14}" text-anchor="middle" font-size="12" fill="rgba(31,41,55,0.65)">${txt}</text>`;
+    })
+    .join("");
+
+  return `
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <span class="badge">Total 30 hari: ${formatIdr(safe.reduce((a, b) => a + b, 0))}</span>
+      <span class="badge">${deltaText}</span>
+    </div>
+    <div class="sep"></div>
+    <svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" role="img" aria-label="Grafik penjualan 30 hari">
+      ${grid}
+      <text x="10" y="${padT + 12}" font-size="12" fill="rgba(31,41,55,0.65)">${escapeHtml(yLabelTop)}</text>
+      <text x="10" y="${padT + plotH / 2 + 6}" font-size="12" fill="rgba(31,41,55,0.65)">${escapeHtml(yLabelMid)}</text>
+      <text x="10" y="${padT + plotH + 6}" font-size="12" fill="rgba(31,41,55,0.65)">${escapeHtml(yLabelBot)}</text>
+      <polyline points="${pts}" fill="none" stroke="rgba(234,88,12,0.95)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
+      ${xLabels}
+    </svg>
+  `;
+};
+
+const svgBarChart = ({ items, height = 180 } = {}) => {
+  const w = 600;
+  const h = Math.max(120, Number(height || 180));
+  const padL = 160;
+  const padR = 12;
+  const padT = 12;
+  const padB = 18;
+  const list = Array.isArray(items) ? items : [];
+  if (!list.length) return `<div class="muted">Belum ada data.</div>`;
+  const maxV = Math.max(0, ...list.map((x) => Number(x.value || 0)));
+  const plotW = w - padL - padR;
+  const rowH = (h - padT - padB) / list.length;
+  const barH = Math.max(10, rowH * 0.62);
+  const y0 = padT + (rowH - barH) / 2;
+
+  const rows = list
+    .map((it, i) => {
+      const v = Number.isFinite(Number(it.value)) ? Number(it.value) : 0;
+      const ratio = maxV ? v / maxV : 0;
+      const bw = Math.max(0, plotW * ratio);
+      const y = y0 + i * rowH;
+      const label = escapeHtml(it.label || "");
+      return `
+        <text x="${padL - 10}" y="${y + barH * 0.72}" text-anchor="end" font-size="12" fill="rgba(31,41,55,0.78)">${label}</text>
+        <rect x="${padL}" y="${y}" width="${bw}" height="${barH}" rx="10" fill="rgba(16,185,129,0.78)" />
+        <text x="${padL + bw + 8}" y="${y + barH * 0.72}" text-anchor="start" font-size="12" fill="rgba(31,41,55,0.70)">${escapeHtml(
+          `${v}`
+        )}</text>
+      `;
+    })
+    .join("");
+
+  return `
+    <svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" role="img" aria-label="Grafik menu paling sering dipesan">
+      ${rows}
+    </svg>
+  `;
 };
 
 const statusLabel = (order) => {
@@ -1699,9 +1798,6 @@ const renderAdmin = () => {
     return "";
   }
 
-  const gh = githubSettings();
-  const ghTokenSet = Boolean(getGithubToken());
-
   const imageEditing = state.ui.adminImageMenuId ? menuById(state.ui.adminImageMenuId) : null;
   const imageModal = imageEditing
     ? `
@@ -1785,6 +1881,56 @@ const renderAdmin = () => {
     unpaidOrders: state.orders.filter((o) => o.paymentStatus !== "PAID" && o.status !== "CANCELLED").length,
   };
 
+  const paidOrders = state.orders.filter((o) => o.paymentStatus === "PAID" && o.status !== "CANCELLED");
+  const last30Keys = lastNDaysKeys(30);
+  const salesByDay = new Map(last30Keys.map((k) => [k, 0]));
+  const menuCountById = new Map();
+  const nowKeyDay = toLocalDayKey(nowIso());
+  const nowKeyMonth = toLocalMonthKey(nowIso());
+  const nowKeyYear = toLocalYearKey(nowIso());
+  let revenueToday = 0;
+  let revenueThisMonth = 0;
+  let revenueThisYear = 0;
+  for (const o of paidOrders) {
+    const t = o.paidAt || o.createdAt || null;
+    const k = toLocalDayKey(t);
+    if (k && salesByDay.has(k)) {
+      salesByDay.set(k, Number(salesByDay.get(k) || 0) + Number(orderTotals(o).subtotal || 0));
+    }
+    const total = Number(orderTotals(o).subtotal || 0);
+    if (k === nowKeyDay) revenueToday += total;
+    if (toLocalMonthKey(t) === nowKeyMonth) revenueThisMonth += total;
+    if (toLocalYearKey(t) === nowKeyYear) revenueThisYear += total;
+    for (const line of o.items || []) {
+      const menuId = line.menuId || "";
+      if (!menuId) continue;
+      menuCountById.set(menuId, Number(menuCountById.get(menuId) || 0) + Number(line.qty || 0));
+    }
+  }
+  const salesLabels = last30Keys.map((k) => shortDayLabel(k));
+  const salesValues = last30Keys.map((k) => Number(salesByDay.get(k) || 0));
+  const topMenuItems = [...menuCountById.entries()]
+    .map(([menuId, qty]) => {
+      const m = menuById(menuId);
+      const name = m?.name || menuId;
+      return { label: name, value: Number(qty || 0) };
+    })
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 8);
+
+  const monthKeys = lastNMonthsKeys(12);
+  const revenueByMonth = new Map(monthKeys.map((k) => [k, 0]));
+  const yearKeys = lastNYearsKeys(5);
+  const revenueByYear = new Map(yearKeys.map((k) => [k, 0]));
+  for (const o of paidOrders) {
+    const t = o.paidAt || o.createdAt || null;
+    const total = Number(orderTotals(o).subtotal || 0);
+    const mk = toLocalMonthKey(t);
+    const yk = toLocalYearKey(t);
+    if (mk && revenueByMonth.has(mk)) revenueByMonth.set(mk, Number(revenueByMonth.get(mk) || 0) + total);
+    if (yk && revenueByYear.has(yk)) revenueByYear.set(yk, Number(revenueByYear.get(yk) || 0) + total);
+  }
+
   const orderHistory = state.orders
     .slice()
     .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
@@ -1843,48 +1989,83 @@ const renderAdmin = () => {
             </div>
           </div>
           <div class="sep"></div>
-          <form class="card" data-form="github-assets">
+          <section class="card">
             <div class="card__hd">
               <div>
-                <div class="card__title">Upload Gambar ke GitHub Assets (opsional)</div>
-                <div class="card__sub">Agar gambar benar-benar masuk folder assets di repo GitHub.</div>
+                <div class="card__title">Pendapatan</div>
+                <div class="card__sub">Ringkasan otomatis dari pesanan yang sudah lunas.</div>
               </div>
-              <span class="badge ${ghTokenSet ? "badge--ok" : "badge--warn"}">${ghTokenSet ? "Token tersimpan (session)" : "Token belum ada"}</span>
+              <div class="row">
+                <button class="btn btn--primary" data-action="download-report-excel" type="button">Download Laporan (Excel)</button>
+              </div>
             </div>
             <div class="card__bd">
-              <div class="row">
-                <div class="field" style="flex:0 0 auto;min-width:220px">
-                  <label>Aktifkan</label>
-                  <label style="display:flex;gap:10px;align-items:center">
-                    <input type="checkbox" name="enabled" ${gh.enabled ? "checked" : ""} />
-                    <span class="badge">${gh.enabled ? "On" : "Off"}</span>
-                  </label>
-                </div>
-                <div class="field" style="flex:1;min-width:220px">
-                  <label>Owner</label>
-                  <input class="input" name="owner" placeholder="username" value="${escapeHtml(gh.owner)}" />
-                </div>
-                <div class="field" style="flex:1;min-width:220px">
-                  <label>Repo</label>
-                  <input class="input" name="repo" placeholder="nama-repo" value="${escapeHtml(gh.repo)}" />
-                </div>
-                <div class="field" style="flex:0 0 auto;min-width:160px">
-                  <label>Branch</label>
-                  <input class="input" name="branch" placeholder="main" value="${escapeHtml(gh.branch)}" />
-                </div>
+              <div class="row" style="flex-wrap:wrap">
+                <span class="badge badge--ok">Hari ini: ${formatIdr(revenueToday)}</span>
+                <span class="badge badge--ok">Bulan ini: ${formatIdr(revenueThisMonth)}</span>
+                <span class="badge badge--ok">Tahun ini: ${formatIdr(revenueThisYear)}</span>
               </div>
-              <div class="row">
-                <div class="field" style="flex:1;min-width:220px">
-                  <label>Token (tidak disimpan permanen)</label>
-                  <input class="input" name="token" type="password" placeholder="${ghTokenSet ? "Biarkan kosong untuk tetap pakai token yang ada" : "ghp_..."}" />
-                </div>
-              </div>
-              <div class="row">
-                <button class="btn btn--primary" type="submit">Simpan</button>
-                <button class="btn btn--danger" type="button" data-action="github-clear-token">Hapus Token</button>
+              <div class="sep"></div>
+              <div class="grid">
+                <section class="card col-6">
+                  <div class="card__hd">
+                    <div>
+                      <div class="card__title">Per Bulan (12 bulan)</div>
+                      <div class="card__sub">Pendapatan pesanan lunas per bulan.</div>
+                    </div>
+                  </div>
+                  <div class="card__bd">
+                    ${svgLineChart({
+                      labels: monthKeys.map((k) => shortMonthLabel(k)),
+                      values: monthKeys.map((k) => Number(revenueByMonth.get(k) || 0)),
+                      height: 170,
+                    })}
+                  </div>
+                </section>
+                <section class="card col-6">
+                  <div class="card__hd">
+                    <div>
+                      <div class="card__title">Per Tahun (5 tahun)</div>
+                      <div class="card__sub">Pendapatan pesanan lunas per tahun.</div>
+                    </div>
+                  </div>
+                  <div class="card__bd">
+                    ${svgBarChart({
+                      items: yearKeys.map((k) => ({ label: k, value: Number(revenueByYear.get(k) || 0) })),
+                      height: 170,
+                    })}
+                  </div>
+                </section>
               </div>
             </div>
-          </form>
+          </section>
+          <div class="sep"></div>
+          <div class="grid">
+            <section class="card col-6">
+              <div class="card__hd">
+                <div>
+                  <div class="card__title">Grafik Penjualan (30 Hari)</div>
+                  <div class="card__sub">Total penjualan pesanan lunas per hari.</div>
+                </div>
+                <span class="badge">${paidOrders.length} pesanan lunas</span>
+              </div>
+              <div class="card__bd">
+                ${svgLineChart({ labels: salesLabels, values: salesValues, height: 190 })}
+              </div>
+            </section>
+            <section class="card col-6">
+              <div class="card__hd">
+                <div>
+                  <div class="card__title">Menu Paling Sering Dipesan (30 Hari)</div>
+                  <div class="card__sub">Top menu berdasarkan jumlah item.</div>
+                </div>
+                <span class="badge">${topMenuItems.reduce((s, x) => s + Number(x.value || 0), 0)} item</span>
+              </div>
+              <div class="card__bd">
+                ${svgBarChart({ items: topMenuItems, height: 190 })}
+              </div>
+            </section>
+          </div>
           <div class="sep"></div>
           <form class="card" data-form="create-menu">
             <div class="card__hd">
@@ -2924,26 +3105,12 @@ document.addEventListener("click", async (e) => {
     const url = urlEl instanceof HTMLInputElement ? `${urlEl.value || ""}`.trim() : "";
     const file = fileEl instanceof HTMLInputElement ? fileEl.files?.[0] || null : null;
 
-    const cfg = githubSettings();
     let image = url;
-    let dataUrl = "";
     try {
-      if (file) dataUrl = await imageFileToDataUrl(file);
-      else if (url && cfg.enabled) dataUrl = await imageUrlToDataUrl(url);
+      if (file) image = await imageFileToDataUrl(file);
     } catch (err) {
       toast(err?.message || "Gagal memproses gambar");
       return;
-    }
-
-    if (dataUrl) {
-      try {
-        const up = await uploadMenuImageToGithubAssetsIfEnabled({ menuId: m.id, dataUrl });
-        if (up.ok) image = up.assetPath;
-        else image = dataUrl;
-      } catch {
-        image = dataUrl;
-        toast("Upload ke GitHub gagal, pakai gambar lokal dulu");
-      }
     }
 
     if (!image) {
@@ -2960,10 +3127,102 @@ document.addEventListener("click", async (e) => {
     return;
   }
 
-  if (action === "github-clear-token") {
-    setGithubToken("");
-    toast("Token dihapus");
-    render();
+  if (action === "download-report-excel") {
+    const paidOrders = state.orders.filter((o) => o.paymentStatus === "PAID" && o.status !== "CANCELLED");
+    const todayKey = toLocalDayKey(nowIso());
+    const monthKey = toLocalMonthKey(nowIso());
+    const yearKey = toLocalYearKey(nowIso());
+
+    let revenueToday = 0;
+    let revenueMonth = 0;
+    let revenueYear = 0;
+    for (const o of paidOrders) {
+      const t = o.paidAt || o.createdAt || null;
+      const total = Number(orderTotals(o).subtotal || 0);
+      if (toLocalDayKey(t) === todayKey) revenueToday += total;
+      if (toLocalMonthKey(t) === monthKey) revenueMonth += total;
+      if (toLocalYearKey(t) === yearKey) revenueYear += total;
+    }
+
+    const dayKeys = lastNDaysKeys(30);
+    const salesByDay = new Map(dayKeys.map((k) => [k, 0]));
+    const monthKeys = lastNMonthsKeys(12);
+    const salesByMonth = new Map(monthKeys.map((k) => [k, 0]));
+    const yearKeys = lastNYearsKeys(5);
+    const salesByYear = new Map(yearKeys.map((k) => [k, 0]));
+    const menuQty = new Map();
+
+    for (const o of paidOrders) {
+      const t = o.paidAt || o.createdAt || null;
+      const total = Number(orderTotals(o).subtotal || 0);
+      const dk = toLocalDayKey(t);
+      const mk = toLocalMonthKey(t);
+      const yk = toLocalYearKey(t);
+      if (dk && salesByDay.has(dk)) salesByDay.set(dk, Number(salesByDay.get(dk) || 0) + total);
+      if (mk && salesByMonth.has(mk)) salesByMonth.set(mk, Number(salesByMonth.get(mk) || 0) + total);
+      if (yk && salesByYear.has(yk)) salesByYear.set(yk, Number(salesByYear.get(yk) || 0) + total);
+      for (const line of o.items || []) {
+        const menuId = `${line.menuId || ""}`;
+        if (!menuId) continue;
+        menuQty.set(menuId, Number(menuQty.get(menuId) || 0) + Number(line.qty || 0));
+      }
+    }
+
+    const topMenu = [...menuQty.entries()]
+      .map(([menuId, qty]) => ({ menuId, name: menuById(menuId)?.name || menuId, qty: Number(qty || 0) }))
+      .sort((a, b) => b.qty - a.qty)
+      .slice(0, 50);
+
+    const sheets = [
+      {
+        name: "Ringkasan",
+        rows: [
+          ["Periode", "Pendapatan"],
+          ["Hari ini", revenueToday],
+          ["Bulan ini", revenueMonth],
+          ["Tahun ini", revenueYear],
+          ["Total paid (all time)", paidOrders.reduce((s, o) => s + Number(orderTotals(o).subtotal || 0), 0)],
+        ],
+      },
+      {
+        name: "Harian 30 Hari",
+        rows: [["Tanggal", "Pendapatan"]].concat(dayKeys.map((k) => [k, Number(salesByDay.get(k) || 0)])),
+      },
+      {
+        name: "Bulanan 12 Bulan",
+        rows: [["Bulan", "Pendapatan"]].concat(monthKeys.map((k) => [k, Number(salesByMonth.get(k) || 0)])),
+      },
+      {
+        name: "Tahunan 5 Tahun",
+        rows: [["Tahun", "Pendapatan"]].concat(yearKeys.map((k) => [k, Number(salesByYear.get(k) || 0)])),
+      },
+      {
+        name: "Menu Terlaris",
+        rows: [["Menu", "Qty"]].concat(topMenu.map((x) => [x.name, x.qty])),
+      },
+      {
+        name: "Pesanan Lunas",
+        rows: [["Kode", "Waktu Lunas", "Metode", "Meja", "Total", "Pembayaran", "Jumlah Item"]].concat(
+          paidOrders
+            .slice()
+            .sort((a, b) => new Date(b.paidAt || b.createdAt || 0).getTime() - new Date(a.paidAt || a.createdAt || 0).getTime())
+            .map((o) => {
+              const totals = orderTotals(o);
+              const method = o.method === "dinein" ? "Dine-In" : "Takeaway";
+              const table = o.method === "dinein" ? `${o.tableNumber || ""}` : "";
+              const paidAt = o.paidAt ? new Date(o.paidAt).toLocaleString("id-ID") : o.createdAt ? new Date(o.createdAt).toLocaleString("id-ID") : "";
+              return [o.code || o.id, paidAt, method, table, Number(totals.subtotal || 0), paymentTypeLabel(o.paymentType) || "", Number(totals.itemsCount || 0)];
+            })
+        ),
+      },
+    ];
+
+    try {
+      excelXmlWorkbook(sheets, "laporan-adindang-food");
+      toast("Laporan Excel diunduh");
+    } catch {
+      toast("Gagal membuat laporan");
+    }
     return;
   }
 
@@ -3173,25 +3432,12 @@ document.addEventListener("submit", async (e) => {
 
     const base = name.replace(/[^a-z0-9]+/gi, "").toUpperCase().slice(0, 16) || "MENU";
     const id = `M-${base}-${Math.random().toString(36).slice(2, 5).toUpperCase()}`;
-    const cfg = githubSettings();
     let image = imageUrl;
-    let dataUrl = "";
     try {
-      if (imageFile) dataUrl = await imageFileToDataUrl(imageFile);
-      else if (imageUrl && cfg.enabled) dataUrl = await imageUrlToDataUrl(imageUrl);
+      if (imageFile) image = await imageFileToDataUrl(imageFile);
     } catch (err) {
       toast(err?.message || "Gagal memproses gambar");
       return;
-    }
-    if (dataUrl) {
-      try {
-        const up = await uploadMenuImageToGithubAssetsIfEnabled({ menuId: id, dataUrl });
-        if (up.ok) image = up.assetPath;
-        else image = dataUrl;
-      } catch {
-        image = dataUrl;
-        toast("Upload ke GitHub gagal, pakai gambar lokal dulu");
-      }
     }
     const menu = { id, name, category, price: Math.round(price), stock: Math.round(stock), variants, ...(image ? { image } : {}) };
     state.menu.push(menu);
@@ -3200,25 +3446,6 @@ document.addEventListener("submit", async (e) => {
     form.reset();
     render();
     toast("Menu ditambahkan");
-    return;
-  }
-
-  if (type === "github-assets") {
-    const enabled = Boolean(form.enabled?.checked);
-    const owner = `${form.owner?.value || ""}`.trim();
-    const repo = `${form.repo?.value || ""}`.trim();
-    const branch = `${form.branch?.value || ""}`.trim() || "main";
-    const token = `${form.token?.value || ""}`.trim();
-
-    state.settings = {
-      ...(state.settings || {}),
-      github: { enabled, owner, repo, branch },
-    };
-    if (token) setGithubToken(token);
-    saveState(state);
-    form.token.value = "";
-    render();
-    toast("Pengaturan GitHub disimpan");
     return;
   }
 
