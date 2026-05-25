@@ -1452,15 +1452,15 @@ const renderCheckout = () => {
     .map(
       (l) => `
         <tr>
-          <td>
+          <td data-label="Item">
             <div style="font-weight:680">${l.name}</div>
             <div class="muted" style="font-size:13px;line-height:1.35">
               ${l.variantText ? `${l.variantText}<br/>` : ""}${l.itemNote ? `Catatan item: ${l.itemNote}` : ""}
             </div>
           </td>
-          <td>${l.qty}</td>
-          <td>${formatIdr(l.price)}</td>
-          <td>${formatIdr(l.price * l.qty)}</td>
+          <td data-label="Qty">${l.qty}</td>
+          <td data-label="Harga">${formatIdr(l.price)}</td>
+          <td data-label="Total">${formatIdr(l.price * l.qty)}</td>
         </tr>
       `
     )
@@ -1494,6 +1494,7 @@ const renderCheckout = () => {
             </div>
           </div>
           <div class="sep"></div>
+          <div class="tablewrap">
           <table class="table">
             <thead>
               <tr>
@@ -1505,6 +1506,7 @@ const renderCheckout = () => {
             </thead>
             <tbody>${lines}</tbody>
           </table>
+          </div>
           <div class="sep"></div>
           <div class="row" style="justify-content:space-between">
             <span class="badge">Subtotal</span>
@@ -1579,6 +1581,7 @@ const renderPay = (orderId) => {
                 : ""
             }
             <div class="sep"></div>
+            <div class="tablewrap">
             <table class="table">
               <thead>
                 <tr>
@@ -1593,21 +1596,22 @@ const renderPay = (orderId) => {
                   .map(
                     (l) => `
                       <tr>
-                        <td>
+                        <td data-label="Item">
                           <div style="font-weight:680">${l.name}</div>
                           <div class="muted" style="font-size:13px;line-height:1.35">
                             ${l.variantText ? `${l.variantText}<br/>` : ""}${l.itemNote ? `Catatan item: ${l.itemNote}` : ""}
                           </div>
                         </td>
-                        <td>${l.qty}</td>
-                        <td>${formatIdr(l.price)}</td>
-                        <td>${formatIdr(l.price * l.qty)}</td>
+                        <td data-label="Qty">${l.qty}</td>
+                        <td data-label="Harga">${formatIdr(l.price)}</td>
+                        <td data-label="Total">${formatIdr(l.price * l.qty)}</td>
                       </tr>
                     `
                   )
                   .join("")}
               </tbody>
             </table>
+            </div>
             <div class="sep"></div>
             <div class="row">
               <button class="btn btn--primary" ${unpaid ? "" : "disabled"} data-action="cashier-show-qris" data-order="${order.id}">${qrisActive ? "QRIS Ditampilkan" : "Tampilkan QRIS"}</button>
@@ -1728,13 +1732,13 @@ const renderOrders = () => {
       const method = o.method === "dinein" ? `Dine-In · Meja ${o.tableNumber || "-"}` : "Takeaway";
       return `
         <tr>
-          <td><span style="font-family:var(--mono)">${o.code}</span></td>
-          <td>${method}</td>
-          <td>${new Date(o.createdAt).toLocaleString("id-ID")}</td>
-          <td><span class="badge ${badgeCls}">${paymentLabel(o)}</span></td>
-          <td><span class="badge">${statusLabel(o)}</span></td>
-          <td>${formatIdr(totals.subtotal)}</td>
-          <td>
+          <td data-label="Kode"><span style="font-family:var(--mono)">${o.code}</span></td>
+          <td data-label="Metode">${method}</td>
+          <td data-label="Dibuat">${new Date(o.createdAt).toLocaleString("id-ID")}</td>
+          <td data-label="Pembayaran"><span class="badge ${badgeCls}">${paymentLabel(o)}</span></td>
+          <td data-label="Status"><span class="badge">${statusLabel(o)}</span></td>
+          <td data-label="Total">${formatIdr(totals.subtotal)}</td>
+          <td data-label="Aksi">
             <div class="row">
               <button class="btn btn--primary" data-nav="#/pay/${o.id}">Bayar / Detail</button>
               <button class="btn" data-nav="#/track/${o.id}">Status</button>
@@ -1758,6 +1762,7 @@ const renderOrders = () => {
           </div>
         </div>
         <div class="card__bd">
+          <div class="tablewrap">
           <table class="table">
             <thead>
               <tr>
@@ -1774,6 +1779,7 @@ const renderOrders = () => {
               ${rows || `<tr><td colspan="7" class="muted">Belum ada pesanan.</td></tr>`}
             </tbody>
           </table>
+          </div>
         </div>
       </section>
     </div>
@@ -1934,12 +1940,12 @@ const renderAdmin = () => {
       const soldOut = Number(m.stock ?? 0) <= 0;
       return `
         <tr>
-          <td><span style="font-family:var(--mono)">${m.id}</span></td>
-          <td>${escapeHtml(m.name)}</td>
-          <td>${m.category === "food" ? "Makanan" : "Minuman"}</td>
-          <td>${formatIdr(m.price)}</td>
-          <td><span class="badge ${soldOut ? "badge--danger" : ""}">${m.stock ?? 0}</span></td>
-          <td>
+          <td data-label="ID"><span style="font-family:var(--mono)">${m.id}</span></td>
+          <td data-label="Nama">${escapeHtml(m.name)}</td>
+          <td data-label="Kategori">${m.category === "food" ? "Makanan" : "Minuman"}</td>
+          <td data-label="Harga">${formatIdr(m.price)}</td>
+          <td data-label="Stok"><span class="badge ${soldOut ? "badge--danger" : ""}">${m.stock ?? 0}</span></td>
+          <td data-label="Aksi">
             <div class="row">
               <button class="btn" data-action="edit-menu" data-menu="${m.id}">Edit</button>
               <button class="btn" data-action="edit-variants" data-menu="${m.id}">Variasi</button>
@@ -2022,13 +2028,13 @@ const renderAdmin = () => {
       const canReceipt = o.paymentStatus === "PAID";
       return `
         <tr>
-          <td><span style="font-family:var(--mono)">${o.code}</span></td>
-          <td>${createdAt}</td>
-          <td>${method}</td>
-          <td><span class="badge">${paymentLabel(o)}</span></td>
-          <td><span class="badge">${statusLabel(o)}</span></td>
-          <td>${formatIdr(totals.subtotal)}</td>
-          <td>
+          <td data-label="Kode"><span style="font-family:var(--mono)">${o.code}</span></td>
+          <td data-label="Waktu">${createdAt}</td>
+          <td data-label="Meja/Takeaway">${method}</td>
+          <td data-label="Pembayaran"><span class="badge">${paymentLabel(o)}</span></td>
+          <td data-label="Status"><span class="badge">${statusLabel(o)}</span></td>
+          <td data-label="Total">${formatIdr(totals.subtotal)}</td>
+          <td data-label="Aksi">
             <div class="row">
               <button class="btn" data-action="view-order" data-order="${o.id}" data-title="Detail Pesanan">Detail</button>
               <button class="btn" data-action="print-receipt" data-order="${o.id}" ${canReceipt ? "" : "disabled"}>Struk</button>
@@ -2237,6 +2243,7 @@ const renderAdmin = () => {
             </div>
           </form>
           <div class="sep"></div>
+          <div class="tablewrap">
           <table class="table">
             <thead>
               <tr>
@@ -2252,12 +2259,14 @@ const renderAdmin = () => {
               ${rows || `<tr><td colspan="6" class="muted">Menu kosong.</td></tr>`}
             </tbody>
           </table>
+          </div>
           <div class="sep"></div>
           <div class="row" style="justify-content:space-between">
             <div class="badge">Riwayat Pesanan (terbaru)</div>
             <div class="badge">${orderHistory.length} pesanan</div>
           </div>
           <div class="sep"></div>
+          <div class="tablewrap">
           <table class="table">
             <thead>
               <tr>
@@ -2274,6 +2283,7 @@ const renderAdmin = () => {
               ${orderRows || `<tr><td colspan="7" class="muted">Belum ada pesanan.</td></tr>`}
             </tbody>
           </table>
+          </div>
         </div>
       </section>
     </div>
@@ -2329,11 +2339,11 @@ const renderCashier = () => {
       const preferred = o.paymentMethod === "CASHIER";
       return `
         <tr>
-          <td><span style="font-family:var(--mono)">${o.code}</span></td>
-          <td>${method}</td>
-          <td>${formatIdr(totals.subtotal)}</td>
-          <td><span class="badge ${preferred ? "badge--ok" : "badge"}">${preferred ? "Bayar di kasir" : "Belum pilih"}</span></td>
-          <td>
+          <td data-label="Kode"><span style="font-family:var(--mono)">${o.code}</span></td>
+          <td data-label="Meja/Takeaway">${method}</td>
+          <td data-label="Total">${formatIdr(totals.subtotal)}</td>
+          <td data-label="Preferensi"><span class="badge ${preferred ? "badge--ok" : "badge"}">${preferred ? "Bayar di kasir" : "Belum pilih"}</span></td>
+          <td data-label="Aksi">
             <div class="row">
               <button class="btn btn--primary" data-action="cashier-show-qris" data-order="${o.id}">QRIS</button>
               <button class="btn btn--ok" data-action="cashier-pay" data-order="${o.id}" data-paytype="TUNAI">Tunai</button>
@@ -2354,11 +2364,11 @@ const renderCashier = () => {
       const payType = paymentTypeLabel(o.paymentType) || "-";
       return `
         <tr>
-          <td><span style="font-family:var(--mono)">${o.code}</span></td>
-          <td>${method}</td>
-          <td>${formatIdr(totals.subtotal)}</td>
-          <td><span class="badge badge--ok">${payType}</span></td>
-          <td>
+          <td data-label="Kode"><span style="font-family:var(--mono)">${o.code}</span></td>
+          <td data-label="Meja/Takeaway">${method}</td>
+          <td data-label="Total">${formatIdr(totals.subtotal)}</td>
+          <td data-label="Metode"><span class="badge badge--ok">${payType}</span></td>
+          <td data-label="Aksi">
             <div class="row">
               <button class="btn" data-action="print-receipt" data-order="${o.id}">Cetak Struk</button>
               <button class="btn" data-nav="#/pay/${o.id}">Detail</button>
@@ -2391,6 +2401,7 @@ const renderCashier = () => {
             <button class="btn btn--primary" type="submit">Cari</button>
           </form>
           <div class="sep"></div>
+          <div class="tablewrap">
           <table class="table">
             <thead>
               <tr>
@@ -2405,12 +2416,14 @@ const renderCashier = () => {
               ${rows || `<tr><td colspan="5" class="muted">Tidak ada pesanan yang perlu dibayar.</td></tr>`}
             </tbody>
           </table>
+          </div>
           <div class="sep"></div>
           <div class="row" style="justify-content:space-between">
             <div class="badge">Riwayat Lunas (terbaru)</div>
             <div class="badge">${paid.length} pesanan lunas</div>
           </div>
           <div class="sep"></div>
+          <div class="tablewrap">
           <table class="table">
             <thead>
               <tr>
@@ -2425,6 +2438,7 @@ const renderCashier = () => {
               ${paidRows || `<tr><td colspan="5" class="muted">Belum ada pesanan lunas.</td></tr>`}
             </tbody>
           </table>
+          </div>
         </div>
       </section>
     </div>
@@ -2474,20 +2488,20 @@ const renderKitchen = () => {
 
       return `
         <tr>
-          <td><span style="font-family:var(--mono)">${o.code}</span></td>
-          <td>${o.method === "dinein" ? `Meja ${o.tableNumber || "-"}` : "Takeaway"}</td>
-          <td>
+          <td data-label="Kode"><span style="font-family:var(--mono)">${o.code}</span></td>
+          <td data-label="Meja/Takeaway">${o.method === "dinein" ? `Meja ${o.tableNumber || "-"}` : "Takeaway"}</td>
+          <td data-label="Item">
             ${itemList}
             ${o.orderNote ? `<div class="sep"></div><div class="badge">Catatan: ${escapeHtml(o.orderNote)}</div>` : ""}
           </td>
-          <td>
+          <td data-label="Status">
             <div class="row">
               <span class="badge ${printedAt ? "badge--ok" : "badge--warn"}">${printedAt ? "Tercetak" : "Belum cetak"}</span>
               <span class="badge ${startedAt ? "badge--warn" : ""}">${startedAt ? "Sedang dibuat" : "Belum mulai"}</span>
               <span class="badge ${doneAt ? "badge--ok" : ""}">${doneAt ? "Selesai" : "Belum selesai"}</span>
             </div>
           </td>
-          <td>
+          <td data-label="Aksi">
             <div class="row">
               <button class="btn btn--primary" data-action="print-ticket" data-order="${o.id}">Cetak</button>
               <button class="btn" data-action="view-order" data-order="${o.id}" data-title="Detail Pesanan">Detail</button>
@@ -2527,15 +2541,15 @@ const renderKitchen = () => {
       const when = doneAt ? new Date(doneAt).toLocaleString("id-ID") : new Date(o.createdAt || nowIso()).toLocaleString("id-ID");
       return `
         <tr>
-          <td><span style="font-family:var(--mono)">${o.code}</span></td>
-          <td>${o.method === "dinein" ? `Meja ${o.tableNumber || "-"}` : "Takeaway"}</td>
-          <td><span class="badge">${statusLabel(o)}</span></td>
-          <td>${when}</td>
-          <td>
+          <td data-label="Kode"><span style="font-family:var(--mono)">${o.code}</span></td>
+          <td data-label="Meja/Takeaway">${o.method === "dinein" ? `Meja ${o.tableNumber || "-"}` : "Takeaway"}</td>
+          <td data-label="Status"><span class="badge">${statusLabel(o)}</span></td>
+          <td data-label="Waktu">${when}</td>
+          <td data-label="Item">
             ${itemList}
             ${o.orderNote ? `<div class="sep"></div><div class="badge">Catatan: ${escapeHtml(o.orderNote)}</div>` : ""}
           </td>
-          <td>
+          <td data-label="Aksi">
             <div class="row">
               <button class="btn" data-action="view-order" data-order="${o.id}" data-title="Detail Pesanan">Detail</button>
             </div>
@@ -2563,6 +2577,7 @@ const renderKitchen = () => {
             <div class="badge">${activeOrders.length} pesanan</div>
           </div>
           <div class="sep"></div>
+          <div class="tablewrap">
           <table class="table">
             <thead>
               <tr>
@@ -2577,12 +2592,14 @@ const renderKitchen = () => {
               ${rows || `<tr><td colspan="5" class="muted">Belum ada pesanan untuk diproses.</td></tr>`}
             </tbody>
           </table>
+          </div>
           <div class="sep"></div>
           <div class="row" style="justify-content:space-between">
             <div class="badge">Riwayat (Selesai / Dibatalkan)</div>
             <div class="badge">${historyOrders.length} terakhir</div>
           </div>
           <div class="sep"></div>
+          <div class="tablewrap">
           <table class="table">
             <thead>
               <tr>
@@ -2598,6 +2615,7 @@ const renderKitchen = () => {
               ${historyRows || `<tr><td colspan="6" class="muted">Belum ada riwayat.</td></tr>`}
             </tbody>
           </table>
+          </div>
         </div>
       </section>
     </div>
