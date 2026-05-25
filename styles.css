@@ -62,6 +62,19 @@ a {
 
 .topbar__brand {
   display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand__logo {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+}
+
+.brand__text {
+  display: flex;
   flex-direction: column;
   gap: 2px;
 }
@@ -70,6 +83,7 @@ a {
   font-weight: 740;
   letter-spacing: 0.2px;
   font-family: var(--serif);
+  font-size: 18px;
 }
 
 .brand__subtitle {

@@ -39,7 +39,55 @@ const dbgReport = async (point, data = {}, meta = {}) => {
 const formatIdr = (value) =>
   new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", maximumFractionDigits: 0 }).format(value || 0);
 
+const escapeHtml = (value) =>
+  `${value ?? ""}`.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+
 const nowIso = () => new Date().toISOString();
+
+const imageFileToDataUrl = async (file, { maxSide = 900, quality = 0.82 } = {}) => {
+  if (!file) return "";
+  const type = `${file.type || ""}`.toLowerCase();
+  if (!type.startsWith("image/")) throw new Error("File bukan gambar");
+  if (file.size > 8 * 1024 * 1024) throw new Error("File terlalu besar (maks 8MB)");
+
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    await new Promise((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error("Gagal membaca gambar"));
+      img.src = objectUrl;
+    });
+
+    const srcW = Number(img.naturalWidth || img.width || 0);
+    const srcH = Number(img.naturalHeight || img.height || 0);
+    if (!srcW || !srcH) throw new Error("Gambar tidak valid");
+
+    const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
+    const outW = Math.max(1, Math.round(srcW * scale));
+    const outH = Math.max(1, Math.round(srcH * scale));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = outW;
+    canvas.height = outH;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas tidak tersedia");
+    ctx.drawImage(img, 0, 0, outW, outH);
+
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
+    if (!blob) return canvas.toDataURL("image/jpeg", quality);
+
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(`${reader.result || ""}`);
+      reader.onerror = () => reject(new Error("Gagal encode gambar"));
+      reader.readAsDataURL(blob);
+    });
+    return dataUrl;
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+};
 
 const uid = () => {
   const raw = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -123,6 +171,7 @@ const loadState = () => {
         addingMenuId: null,
         addingVariantSelections: {},
         cashierQrisOrderId: null,
+        adminImageMenuId: null,
         sound: { cashier: false, kitchen: false },
       },
     };
@@ -144,6 +193,7 @@ const loadState = () => {
       if (!next.paymentType && next.paymentMethod === "ONLINE") next.paymentType = "QRIS";
       if (!next.paymentType && next.paymentMethod === "CASHIER") next.paymentType = "TUNAI";
       if (next.status === "AWAITING_PAYMENT") next.status = "RECEIVED";
+      if (next.kitchen?.doneAt && next.status !== "CANCELLED") next.status = "COMPLETED";
       if (next.stockDeducted == null) next.stockDeducted = next.paymentStatus === "PAID";
       if (!next.deductedAt && next.stockDeducted) next.deductedAt = next.paidAt || next.createdAt || null;
       return next;
@@ -158,6 +208,7 @@ const loadState = () => {
         addingMenuId: null,
         addingVariantSelections: {},
         cashierQrisOrderId: null,
+        adminImageMenuId: null,
         sound: { cashier: false, kitchen: false },
         ...(parsed.ui || {}),
       },
@@ -243,19 +294,23 @@ const playBeep = async () => {
   const ok = await ensureSound();
   if (!ok) return;
   if (audioCtx.state === "suspended") await audioCtx.resume();
-  const o = audioCtx.createOscillator();
-  const g = audioCtx.createGain();
-  o.type = "sine";
-  o.frequency.value = 880;
-  g.gain.value = 0.0001;
-  o.connect(g);
-  g.connect(audioCtx.destination);
   const t0 = audioCtx.currentTime;
-  g.gain.setValueAtTime(0.0001, t0);
-  g.gain.linearRampToValueAtTime(0.06, t0 + 0.02);
-  g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.14);
-  o.start(t0);
-  o.stop(t0 + 0.16);
+  const mk = (freq, start, dur, peak) => {
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = "sine";
+    o.frequency.value = freq;
+    g.gain.value = 0.0001;
+    o.connect(g);
+    g.connect(audioCtx.destination);
+    g.gain.setValueAtTime(0.0001, start);
+    g.gain.linearRampToValueAtTime(peak, start + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+    o.start(start);
+    o.stop(start + dur + 0.02);
+  };
+  mk(880, t0, 0.22, 0.14);
+  mk(660, t0 + 0.26, 0.22, 0.14);
 };
 
 const isSoundEnabledForRole = (role) => Boolean(state.ui?.sound && state.ui.sound[role]);
@@ -294,6 +349,9 @@ const initRealtime = async () => {
         const items = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
         state.menu = items.length ? items : state.menu;
         dbgReport("fs:menuSnapshot", { count: items.length }, { runId: "pre" });
+        if (!items.length) {
+          toast("Menu server kosong. Masuk Admin → Reset Menu Default.");
+        }
         render();
       },
       (err) => {
@@ -387,6 +445,15 @@ const rtUpdateMenu = async (menuId, patch) => {
   return true;
 };
 
+const rtDeleteMenu = async (menuId) => {
+  if (!realtime.ready) return false;
+  const fs = realtime.fs;
+  const db = realtime.db;
+  dbgReport("rt:deleteMenu", { menuId }, { runId: "pre" });
+  await fs.deleteDoc(fs.doc(db, "menu", menuId));
+  return true;
+};
+
 const rtSetMenu = async (menu) => {
   if (!realtime.ready) return false;
   const fs = realtime.fs;
@@ -421,7 +488,11 @@ const rtCreateOrder = async (order) => {
       for (const [menuId, qty] of needed.entries()) {
         const ref = fs.doc(db, "menu", menuId);
         const snap = await tx.get(ref);
-        const stock = Number(snap.data()?.stock ?? 0);
+        if (!snap.exists()) {
+          throw new Error(`Menu ${menuId} belum ada di server. Buka Admin → Reset Menu Default (seed).`);
+        }
+        const rawStock = snap.data()?.stock;
+        const stock = Number.isFinite(Number(rawStock)) ? Number(rawStock) : 0;
         if (qty > stock) throw new Error(`${menuId} stok kurang`);
         tx.update(ref, { stock: stock - qty, updatedAt: fs.serverTimestamp() });
       }
@@ -523,6 +594,9 @@ const cartTotals = () => {
   return { subtotal, itemsCount };
 };
 
+const cartQtyForMenu = (menuId, excludeKey = null) =>
+  state.session.cart.reduce((sum, line) => sum + (line.menuId === menuId && line.key !== excludeKey ? Number(line.qty || 0) : 0), 0);
+
 const orderTotals = (order) => {
   const subtotal = (order.items || []).reduce((sum, line) => sum + line.price * line.qty, 0);
   const itemsCount = (order.items || []).reduce((sum, line) => sum + line.qty, 0);
@@ -596,23 +670,43 @@ const ensureTableIfDineIn = () => {
 const upsertCartLine = ({ menuId, variantText, itemNote, qtyDelta }) => {
   const menu = menuById(menuId);
   if (!menu) return;
-  if ((menu.stock ?? 0) <= 0) {
+  const stock = Number(menu.stock ?? 0);
+  if (!Number.isFinite(stock) || stock <= 0) {
     toast("Stok habis");
     return;
   }
 
   const key = `${menuId}::${variantText || ""}::${itemNote || ""}`;
   const existing = state.session.cart.find((l) => l.key === key);
+  const otherQty = cartQtyForMenu(menuId, existing ? existing.key : null);
+  const availableForThisLine = Math.max(0, stock - otherQty);
   if (existing) {
-    existing.qty = Math.max(1, existing.qty + qtyDelta);
+    const desired = Math.max(1, Number(existing.qty || 0) + Number(qtyDelta || 0));
+    if (desired > availableForThisLine) {
+      if (availableForThisLine <= 0) {
+        toast(`Stok ${menu.name} habis`);
+        return;
+      }
+      existing.qty = availableForThisLine;
+      toast(`Stok ${menu.name} tersisa ${availableForThisLine}`);
+    } else {
+      existing.qty = desired;
+    }
   } else {
+    if (availableForThisLine <= 0) {
+      toast(`Stok ${menu.name} habis`);
+      return;
+    }
+    const initialQty = Math.max(1, Number(qtyDelta || 0));
+    const qty = Math.min(initialQty, availableForThisLine);
+    if (qty < initialQty) toast(`Stok ${menu.name} tersisa ${availableForThisLine}`);
     state.session.cart.push({
       key,
       menuId,
       name: menu.name,
       category: menu.category,
       price: menu.price,
-      qty: Math.max(1, qtyDelta),
+      qty,
       variantText: variantText || "",
       itemNote: itemNote || "",
     });
@@ -624,11 +718,22 @@ const upsertCartLine = ({ menuId, variantText, itemNote, qtyDelta }) => {
 const changeCartQty = (key, delta) => {
   const idx = state.session.cart.findIndex((l) => l.key === key);
   if (idx < 0) return;
-  const next = state.session.cart[idx].qty + delta;
+  const line = state.session.cart[idx];
+  const next = Number(line.qty || 0) + Number(delta || 0);
   if (next <= 0) {
     state.session.cart.splice(idx, 1);
   } else {
-    state.session.cart[idx].qty = next;
+    if (delta > 0) {
+      const m = menuById(line.menuId);
+      const stock = Number(m?.stock ?? 0);
+      const otherQty = cartQtyForMenu(line.menuId, line.key);
+      const availableForThisLine = Number.isFinite(stock) ? Math.max(0, stock - otherQty) : 0;
+      if (stock <= 0 || next > availableForThisLine) {
+        toast(`Stok ${line.name} tersisa ${availableForThisLine}`);
+        return;
+      }
+    }
+    line.qty = next;
   }
   saveState(state);
   render();
@@ -758,7 +863,7 @@ const updateOrderStatusFromStations = (order) => {
   const done = Boolean(order.kitchen?.doneAt);
   const started = Boolean(order.kitchen?.startedAt);
   if (done) {
-    if (order.status !== "COMPLETED") order.status = "READY";
+    if (order.status !== "CANCELLED") order.status = "COMPLETED";
     return;
   }
   if (started) {
@@ -795,7 +900,7 @@ const renderNav = () => {
     const on = isSoundEnabledForRole(role);
     $nav.insertAdjacentHTML(
       "beforeend",
-      `<button class="navbtn" data-action="toggle-sound" data-role="${role}">Suara: ${on ? "On" : "Off"}</button>`
+      `<button class="navbtn" data-action="toggle-sound" data-role="${role}">Suara: ${on ? "On" : "Off"}</button><button class="navbtn" data-action="test-sound" data-role="${role}">Tes Bunyi</button>`
     );
   }
   if (role !== "guest") {
@@ -819,25 +924,14 @@ const renderHome = () => {
       <section class="card col-12">
         <div class="card__hd">
           <div>
-            <div class="card__title">Scan QR → Pilih Metode → Pesan → Bayar</div>
-            <div class="card__sub">Prototype web untuk pemesanan mandiri: pelanggan, admin stok, kasir, dan dapur.</div>
+            <div class="card__title">Adindang Food</div>
+            <div class="card__sub">Scan QR → Pilih Metode → Pesan → Bayar</div>
           </div>
           <div class="row">
             <button class="btn btn--ghost" data-action="reset">Reset Data Demo</button>
           </div>
         </div>
         <div class="card__bd">
-          <div class="kpi">
-            <div class="kpi__card">
-              <div class="kpi__label">Simulasi QR Meja</div>
-              <div class="kpi__value"><span class="badge">Buka URL dengan <span style="font-family:var(--mono)">?qr=table-7</span></span></div>
-            </div>
-            <div class="kpi__card">
-              <div class="kpi__label">Simulasi QR Takeaway</div>
-              <div class="kpi__value"><span class="badge">Buka URL dengan <span style="font-family:var(--mono)">?takeaway=1</span></span></div>
-            </div>
-          </div>
-          <div class="sep"></div>
           <div class="grid">
             <div class="card col-8">
               <div class="card__hd">
@@ -911,9 +1005,9 @@ const renderMenu = () => {
       const img = m.image || "./assets/placeholder.svg";
       return `
         <div class="menuitem">
-          <img class="menuitem__img" src="${img}" alt="${m.name}" loading="lazy" />
+          <img class="menuitem__img" src="${img}" alt="${escapeHtml(m.name)}" loading="lazy" />
           <div class="menuitem__meta">
-            <div class="menuitem__name">${m.name}</div>
+            <div class="menuitem__name">${escapeHtml(m.name)}</div>
             <div class="menuitem__sub">${m.category === "food" ? "Makanan" : "Minuman"} · ${formatIdr(
               m.price
             )} · <span class="${soldOut ? "badge badge--danger" : "badge"}">Stok: ${m.stock ?? 0}</span></div>
@@ -938,7 +1032,7 @@ const renderMenu = () => {
             <div class="card__hd">
               <div>
                 <div class="card__title">Tambah Item</div>
-                <div class="card__sub">${adding.name} · ${formatIdr(adding.price)} · Stok ${adding.stock ?? 0}</div>
+                <div class="card__sub">${escapeHtml(adding.name)} · ${formatIdr(adding.price)} · Stok ${adding.stock ?? 0}</div>
               </div>
               <div class="row">
                 <button class="btn btn--ghost" data-action="close-add" type="button">Tutup</button>
@@ -946,7 +1040,7 @@ const renderMenu = () => {
             </div>
             <div class="card__bd">
               <div class="addgrid">
-                <img class="menuitem__img menuitem__img--lg" src="${adding.image || "./assets/placeholder.svg"}" alt="${adding.name}" loading="lazy" />
+                <img class="menuitem__img menuitem__img--lg" src="${adding.image || "./assets/placeholder.svg"}" alt="${escapeHtml(adding.name)}" loading="lazy" />
                 <div class="addgrid__meta">
                   <div class="row">
                     <span class="badge">${adding.category === "food" ? "Makanan" : "Minuman"}</span>
@@ -1010,9 +1104,9 @@ const renderMenu = () => {
       (l) => `
       <div class="cartline">
         <div class="cartline__left">
-          <div class="cartline__title">${l.name}</div>
+          <div class="cartline__title">${escapeHtml(l.name)}</div>
           <div class="cartline__sub">
-            ${l.variantText ? `${l.variantText} · ` : ""}${l.itemNote ? `Catatan: ${l.itemNote} · ` : ""}${formatIdr(
+            ${l.variantText ? `${escapeHtml(l.variantText)} · ` : ""}${l.itemNote ? `Catatan: ${escapeHtml(l.itemNote)} · ` : ""}${formatIdr(
         l.price
       )}
           </div>
@@ -1424,20 +1518,19 @@ const renderTrack = (orderId) => {
       title: "Pesanan Diterima",
       sub: "Pesanan sudah diterima sistem dan langsung masuk antrian dapur.",
       active: order.status === "RECEIVED",
-      done: ["COOKING", "READY", "COMPLETED"].includes(order.status),
+      done: ["COOKING", "COMPLETED"].includes(order.status),
     },
     {
       key: "COOKING",
       title: "Sedang Dibuat",
       sub: "Dapur sedang membuat pesanan.",
       active: order.status === "COOKING",
-      done: ["READY", "COMPLETED"].includes(order.status),
+      done: ["COMPLETED"].includes(order.status),
     },
     {
-      key: "READY",
-      title: "Selesai Dibuat",
+      key: "COMPLETED",
+      title: "Selesai",
       sub: order.method === "dinein" ? "Akan diantar ke meja." : "Ambil di counter / dipanggil nomor antrean.",
-      active: order.status === "READY",
       done: order.status === "COMPLETED",
     },
   ];
@@ -1491,6 +1584,56 @@ const renderAdmin = () => {
     return "";
   }
 
+  const imageEditing = state.ui.adminImageMenuId ? menuById(state.ui.adminImageMenuId) : null;
+  const imageModal = imageEditing
+    ? `
+      <div class="modal">
+        <button type="button" class="modal__backdrop" data-action="admin-close-image" aria-label="Tutup"></button>
+        <div class="modal__content">
+          <section class="card">
+            <div class="card__hd">
+              <div>
+                <div class="card__title">Ganti Gambar Menu</div>
+                <div class="card__sub">${escapeHtml(imageEditing.name)}</div>
+              </div>
+              <div class="row">
+                <button class="btn btn--ghost" data-action="admin-close-image" type="button">Tutup</button>
+              </div>
+            </div>
+            <div class="card__bd">
+              <div class="addgrid">
+                <img class="menuitem__img menuitem__img--lg" src="${imageEditing.image || "./assets/placeholder.svg"}" alt="${escapeHtml(
+        imageEditing.name
+      )}" loading="lazy" />
+                <div class="addgrid__meta">
+                  <div class="row">
+                    <div class="field" style="flex:1">
+                      <label>Gambar (URL)</label>
+                      <input class="input" id="admin-image-url" inputmode="url" placeholder="https://... (opsional)" value="${escapeHtml(
+                        imageEditing.image || ""
+                      )}" />
+                    </div>
+                  </div>
+                  <div class="row">
+                    <div class="field" style="flex:1">
+                      <label>Upload Gambar</label>
+                      <input class="input" id="admin-image-file" type="file" accept="image/*" />
+                    </div>
+                  </div>
+                  <div class="sep"></div>
+                  <div class="row">
+                    <button class="btn btn--primary" data-action="admin-save-image" data-menu="${imageEditing.id}" type="button">Simpan</button>
+                    <button class="btn btn--danger" data-action="admin-remove-image" data-menu="${imageEditing.id}" type="button">Hapus Gambar</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    `
+    : "";
+
   const rows = state.menu
     .slice()
     .sort((a, b) => a.name.localeCompare(b.name))
@@ -1499,13 +1642,16 @@ const renderAdmin = () => {
       return `
         <tr>
           <td><span style="font-family:var(--mono)">${m.id}</span></td>
-          <td>${m.name}</td>
+          <td>${escapeHtml(m.name)}</td>
           <td>${m.category === "food" ? "Makanan" : "Minuman"}</td>
           <td>${formatIdr(m.price)}</td>
           <td><span class="badge ${soldOut ? "badge--danger" : ""}">${m.stock ?? 0}</span></td>
           <td>
             <div class="row">
               <button class="btn" data-action="edit-menu" data-menu="${m.id}">Edit</button>
+              <button class="btn" data-action="edit-variants" data-menu="${m.id}">Variasi</button>
+              <button class="btn" data-action="admin-edit-image" data-menu="${m.id}">Gambar</button>
+              <button class="btn btn--danger" data-action="delete-menu" data-menu="${m.id}">Hapus</button>
               <button class="btn btn--danger" data-action="set-stock" data-menu="${m.id}" data-stock="0">Sold Out</button>
               <button class="btn btn--ok" data-action="add-stock" data-menu="${m.id}">Tambah Stok</button>
             </div>
@@ -1521,8 +1667,38 @@ const renderAdmin = () => {
     unpaidOrders: state.orders.filter((o) => o.paymentStatus !== "PAID" && o.status !== "CANCELLED").length,
   };
 
+  const orderHistory = state.orders
+    .slice()
+    .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
+    .slice(0, 50);
+  const orderRows = orderHistory
+    .map((o) => {
+      const totals = orderTotals(o);
+      const method = o.method === "dinein" ? `Meja ${o.tableNumber || "-"}` : "Takeaway";
+      const createdAt = o.createdAt ? new Date(o.createdAt).toLocaleString("id-ID") : "-";
+      const canReceipt = o.paymentStatus === "PAID";
+      return `
+        <tr>
+          <td><span style="font-family:var(--mono)">${o.code}</span></td>
+          <td>${createdAt}</td>
+          <td>${method}</td>
+          <td><span class="badge">${paymentLabel(o)}</span></td>
+          <td><span class="badge">${statusLabel(o)}</span></td>
+          <td>${formatIdr(totals.subtotal)}</td>
+          <td>
+            <div class="row">
+              <button class="btn" data-action="view-order" data-order="${o.id}" data-title="Detail Pesanan">Detail</button>
+              <button class="btn" data-action="print-receipt" data-order="${o.id}" ${canReceipt ? "" : "disabled"}>Struk</button>
+            </div>
+          </td>
+        </tr>
+      `;
+    })
+    .join("");
+
   return `
     <div class="grid">
+      ${imageModal}
       <section class="card col-12">
         <div class="card__hd">
           <div>
@@ -1585,6 +1761,16 @@ const renderAdmin = () => {
                 </div>
               </div>
               <div class="row">
+                <div class="field" style="flex:1">
+                  <label>Gambar (URL)</label>
+                  <input class="input" name="imageUrl" inputmode="url" placeholder="https://... (opsional)" />
+                </div>
+                <div class="field" style="flex:1">
+                  <label>Upload Gambar</label>
+                  <input class="input" name="imageFile" type="file" accept="image/*" />
+                </div>
+              </div>
+              <div class="row">
                 <button class="btn btn--primary" type="submit">Tambah</button>
                 <button class="btn" type="button" data-action="seed-menu">Reset Menu Default</button>
               </div>
@@ -1604,6 +1790,28 @@ const renderAdmin = () => {
             </thead>
             <tbody>
               ${rows || `<tr><td colspan="6" class="muted">Menu kosong.</td></tr>`}
+            </tbody>
+          </table>
+          <div class="sep"></div>
+          <div class="row" style="justify-content:space-between">
+            <div class="badge">Riwayat Pesanan (terbaru)</div>
+            <div class="badge">${orderHistory.length} pesanan</div>
+          </div>
+          <div class="sep"></div>
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Kode</th>
+                <th>Waktu</th>
+                <th>Meja/Takeaway</th>
+                <th>Pembayaran</th>
+                <th>Status</th>
+                <th>Total</th>
+                <th>Aksi</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${orderRows || `<tr><td colspan="7" class="muted">Belum ada pesanan.</td></tr>`}
             </tbody>
           </table>
         </div>
@@ -1773,9 +1981,14 @@ const renderKitchen = () => {
   }
 
   const title = "Dapur";
-  const kitchenOrders = state.orders.filter((o) => o.status !== "CANCELLED" && o.status !== "COMPLETED");
+  const activeOrders = state.orders.filter((o) => o.status !== "CANCELLED" && o.status !== "COMPLETED");
+  const historyOrders = state.orders
+    .filter((o) => o.status === "COMPLETED" || o.status === "CANCELLED")
+    .slice()
+    .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
+    .slice(0, 30);
 
-  const rows = kitchenOrders
+  const rows = activeOrders
     .map((o) => {
       const items = o.items || [];
       if (!items.length) return "";
@@ -1788,9 +2001,9 @@ const renderKitchen = () => {
           (it) => `
             <div style="display:flex;justify-content:space-between;gap:10px">
               <div style="min-width:0">
-                <div style="font-weight:700">${it.name} <span class="badge" style="margin-left:8px">${it.category === "drink" ? "Minuman" : "Makanan"}</span></div>
+                <div style="font-weight:700">${escapeHtml(it.name)} <span class="badge" style="margin-left:8px">${it.category === "drink" ? "Minuman" : "Makanan"}</span></div>
                 <div class="muted" style="font-size:13px;line-height:1.35">
-                  ${it.variantText ? `${it.variantText} · ` : ""}${it.itemNote ? `Catatan: ${it.itemNote}` : ""}
+                  ${it.variantText ? `${escapeHtml(it.variantText)} · ` : ""}${it.itemNote ? `Catatan: ${escapeHtml(it.itemNote)}` : ""}
                 </div>
               </div>
               <div class="qty">x ${it.qty}</div>
@@ -1805,7 +2018,7 @@ const renderKitchen = () => {
           <td>${o.method === "dinein" ? `Meja ${o.tableNumber || "-"}` : "Takeaway"}</td>
           <td>
             ${itemList}
-            ${o.orderNote ? `<div class="sep"></div><div class="badge">Catatan: ${o.orderNote}</div>` : ""}
+            ${o.orderNote ? `<div class="sep"></div><div class="badge">Catatan: ${escapeHtml(o.orderNote)}</div>` : ""}
           </td>
           <td>
             <div class="row">
@@ -1817,6 +2030,7 @@ const renderKitchen = () => {
           <td>
             <div class="row">
               <button class="btn btn--primary" data-action="print-ticket" data-order="${o.id}">Cetak</button>
+              <button class="btn" data-action="view-order" data-order="${o.id}" data-title="Detail Pesanan">Detail</button>
               <button class="btn ${startedAt ? "" : "btn--primary"}" data-action="station-start" data-order="${o.id}">${
         startedAt ? "Batalkan Mulai" : "Mulai Buat"
       }</button>
@@ -1829,6 +2043,46 @@ const renderKitchen = () => {
       `;
     })
     .filter(Boolean)
+    .join("");
+
+  const historyRows = historyOrders
+    .map((o) => {
+      const items = o.items || [];
+      const itemList = items
+        .map(
+          (it) => `
+            <div style="display:flex;justify-content:space-between;gap:10px">
+              <div style="min-width:0">
+                <div style="font-weight:700">${escapeHtml(it.name)} <span class="badge" style="margin-left:8px">${it.category === "drink" ? "Minuman" : "Makanan"}</span></div>
+                <div class="muted" style="font-size:13px;line-height:1.35">
+                  ${it.variantText ? `${escapeHtml(it.variantText)} · ` : ""}${it.itemNote ? `Catatan: ${escapeHtml(it.itemNote)}` : ""}
+                </div>
+              </div>
+              <div class="qty">x ${it.qty}</div>
+            </div>
+          `
+        )
+        .join('<div style="height:10px"></div>');
+      const doneAt = o.kitchen?.doneAt || null;
+      const when = doneAt ? new Date(doneAt).toLocaleString("id-ID") : new Date(o.createdAt || nowIso()).toLocaleString("id-ID");
+      return `
+        <tr>
+          <td><span style="font-family:var(--mono)">${o.code}</span></td>
+          <td>${o.method === "dinein" ? `Meja ${o.tableNumber || "-"}` : "Takeaway"}</td>
+          <td><span class="badge">${statusLabel(o)}</span></td>
+          <td>${when}</td>
+          <td>
+            ${itemList}
+            ${o.orderNote ? `<div class="sep"></div><div class="badge">Catatan: ${escapeHtml(o.orderNote)}</div>` : ""}
+          </td>
+          <td>
+            <div class="row">
+              <button class="btn" data-action="view-order" data-order="${o.id}" data-title="Detail Pesanan">Detail</button>
+            </div>
+          </td>
+        </tr>
+      `;
+    })
     .join("");
 
   return `
@@ -1844,6 +2098,11 @@ const renderKitchen = () => {
           </div>
         </div>
         <div class="card__bd">
+          <div class="row" style="justify-content:space-between">
+            <div class="badge">Antrian</div>
+            <div class="badge">${activeOrders.length} pesanan</div>
+          </div>
+          <div class="sep"></div>
           <table class="table">
             <thead>
               <tr>
@@ -1856,6 +2115,27 @@ const renderKitchen = () => {
             </thead>
             <tbody>
               ${rows || `<tr><td colspan="5" class="muted">Belum ada pesanan untuk diproses.</td></tr>`}
+            </tbody>
+          </table>
+          <div class="sep"></div>
+          <div class="row" style="justify-content:space-between">
+            <div class="badge">Riwayat (Selesai / Dibatalkan)</div>
+            <div class="badge">${historyOrders.length} terakhir</div>
+          </div>
+          <div class="sep"></div>
+          <table class="table">
+            <thead>
+              <tr>
+                <th>Kode</th>
+                <th>Meja/Takeaway</th>
+                <th>Status</th>
+                <th>Waktu</th>
+                <th>Item</th>
+                <th>Aksi</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${historyRows || `<tr><td colspan="6" class="muted">Belum ada riwayat.</td></tr>`}
             </tbody>
           </table>
         </div>
@@ -2205,6 +2485,15 @@ document.addEventListener("click", async (e) => {
     return;
   }
 
+  if (action === "test-sound") {
+    const role = btn.getAttribute("data-role") || state.auth.role || "guest";
+    await ensureSound();
+    playBeep();
+    dbgReport("sound:test", { role, audioState: audioCtx?.state || null }, { hypothesisId: "D", runId: "pre" });
+    toast("Tes bunyi diputar");
+    return;
+  }
+
   if (action === "reset") {
     setHash("#/");
     resetDemo();
@@ -2436,6 +2725,66 @@ document.addEventListener("click", async (e) => {
     return;
   }
 
+  if (action === "admin-edit-image") {
+    const menuId = btn.getAttribute("data-menu");
+    const m = menuById(menuId);
+    if (!m) return;
+    state.ui.adminImageMenuId = m.id;
+    saveState(state);
+    render();
+    return;
+  }
+
+  if (action === "admin-close-image") {
+    state.ui.adminImageMenuId = null;
+    saveState(state);
+    render();
+    return;
+  }
+
+  if (action === "admin-remove-image") {
+    const m = menuById(btn.getAttribute("data-menu"));
+    if (!m) return;
+    m.image = null;
+    if (isRealtimeEnabled()) await rtUpdateMenu(m.id, { image: null });
+    state.ui.adminImageMenuId = null;
+    saveState(state);
+    render();
+    toast("Gambar dihapus");
+    return;
+  }
+
+  if (action === "admin-save-image") {
+    const m = menuById(btn.getAttribute("data-menu"));
+    if (!m) return;
+
+    const urlEl = document.getElementById("admin-image-url");
+    const fileEl = document.getElementById("admin-image-file");
+    const url = urlEl instanceof HTMLInputElement ? `${urlEl.value || ""}`.trim() : "";
+    const file = fileEl instanceof HTMLInputElement ? fileEl.files?.[0] || null : null;
+
+    let image = url;
+    try {
+      if (file) image = await imageFileToDataUrl(file);
+    } catch (err) {
+      toast(err?.message || "Gagal memproses gambar");
+      return;
+    }
+
+    if (!image) {
+      toast("Isi URL atau upload gambar");
+      return;
+    }
+
+    m.image = image;
+    if (isRealtimeEnabled()) await rtUpdateMenu(m.id, { image: m.image });
+    state.ui.adminImageMenuId = null;
+    saveState(state);
+    render();
+    toast("Gambar diperbarui");
+    return;
+  }
+
   if (action === "set-stock") {
     const m = menuById(btn.getAttribute("data-menu"));
     if (!m) return;
@@ -2470,13 +2819,74 @@ document.addEventListener("click", async (e) => {
     if (!Number.isFinite(price) || price < 0) return;
     const stock = Number(window.prompt("Stok (angka):", `${m.stock ?? 0}`) || `${m.stock ?? 0}`);
     if (!Number.isFinite(stock) || stock < 0) return;
+    const variantsToText = (variants) =>
+      (variants || [])
+        .map((v) => `${(v?.name || "").trim()}:${(v?.values || []).map((vv) => `${vv}`.trim()).filter(Boolean).join("|")}`)
+        .filter((s) => s.includes(":") && !s.endsWith(":"))
+        .join(", ");
+    const variantsRaw = window.prompt("Variasi (opsional). Format: Nama:opsi1|opsi2, Nama2:opsi1|opsi2", variantsToText(m.variants));
+    if (variantsRaw == null) return;
+    const variants = parseVariantsInput(variantsRaw);
+    const imageRaw = window.prompt("Gambar (URL). Kosongkan untuk hapus:", m.image || "");
+    if (imageRaw == null) return;
     m.name = name.trim();
     m.price = Math.round(price);
     m.stock = Math.round(stock);
-    if (isRealtimeEnabled()) await rtUpdateMenu(m.id, { name: m.name, price: m.price, stock: m.stock });
+    m.variants = variants;
+    m.image = `${imageRaw}`.trim() || null;
+    if (isRealtimeEnabled())
+      await rtUpdateMenu(m.id, { name: m.name, price: m.price, stock: m.stock, variants: m.variants, image: m.image });
     saveState(state);
     render();
     toast("Menu diperbarui");
+    return;
+  }
+
+  if (action === "edit-variants") {
+    const m = menuById(btn.getAttribute("data-menu"));
+    if (!m) return;
+    const variantsToText = (variants) =>
+      (variants || [])
+        .map((v) => `${(v?.name || "").trim()}:${(v?.values || []).map((vv) => `${vv}`.trim()).filter(Boolean).join("|")}`)
+        .filter((s) => s.includes(":") && !s.endsWith(":"))
+        .join(", ");
+    const raw = window.prompt("Variasi (opsional). Format: Nama:opsi1|opsi2, Nama2:opsi1|opsi2", variantsToText(m.variants));
+    if (raw == null) return;
+    m.variants = parseVariantsInput(raw);
+    if (isRealtimeEnabled()) await rtUpdateMenu(m.id, { variants: m.variants });
+    saveState(state);
+    render();
+    toast("Variasi diperbarui");
+    return;
+  }
+
+  if (action === "delete-menu") {
+    const menuId = btn.getAttribute("data-menu");
+    const m = menuById(menuId);
+    if (!m) return;
+    const ok = window.confirm(`Hapus menu "${m.name}"?`);
+    if (!ok) return;
+    const idx = state.menu.findIndex((x) => x.id === menuId);
+    if (idx >= 0) state.menu.splice(idx, 1);
+    state.session.cart = state.session.cart.filter((l) => l.menuId !== menuId);
+    if (isRealtimeEnabled()) {
+      try {
+        await rtDeleteMenu(menuId);
+      } catch {
+        toast("Gagal hapus menu di server");
+      }
+    }
+    saveState(state);
+    render();
+    toast("Menu dihapus");
+    return;
+  }
+
+  if (action === "view-order") {
+    const order = findOrder(btn.getAttribute("data-order"));
+    if (!order) return;
+    const title = btn.getAttribute("data-title") || "Detail Pesanan";
+    openTicketWindow({ title, order });
     return;
   }
 
@@ -2573,12 +2983,22 @@ document.addEventListener("submit", async (e) => {
     const price = Number(form.price.value || "0");
     const stock = Number(form.stock.value || "0");
     const variants = parseVariantsInput(form.variants.value);
+    const imageUrl = `${form.imageUrl?.value || ""}`.trim();
+    const imageFile = form.imageFile instanceof HTMLInputElement ? form.imageFile.files?.[0] || null : null;
     if (!name) return;
     if (!Number.isFinite(price) || price < 0) return;
     if (!Number.isFinite(stock) || stock < 0) return;
 
-    const id = `M-${name.replace(/\s+/g, "").toUpperCase().slice(0, 16)}-${Math.random().toString(36).slice(2, 5).toUpperCase()}`;
-    const menu = { id, name, category, price: Math.round(price), stock: Math.round(stock), variants };
+    const base = name.replace(/[^a-z0-9]+/gi, "").toUpperCase().slice(0, 16) || "MENU";
+    const id = `M-${base}-${Math.random().toString(36).slice(2, 5).toUpperCase()}`;
+    let image = imageUrl;
+    try {
+      if (imageFile) image = await imageFileToDataUrl(imageFile);
+    } catch (err) {
+      toast(err?.message || "Gagal memproses gambar");
+      return;
+    }
+    const menu = { id, name, category, price: Math.round(price), stock: Math.round(stock), variants, ...(image ? { image } : {}) };
     state.menu.push(menu);
     if (isRealtimeEnabled()) await rtSetMenu(menu);
     saveState(state);
