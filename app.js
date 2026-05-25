@@ -174,9 +174,6 @@ const loadState = () => {
         adminImageMenuId: null,
         sound: { cashier: false, kitchen: false },
       },
-      settings: {
-        realtime: { enabled: false, provider: "firebase", firebaseConfig: {} },
-      },
     };
   }
   try {
@@ -214,10 +211,6 @@ const loadState = () => {
         adminImageMenuId: null,
         sound: { cashier: false, kitchen: false },
         ...(parsed.ui || {}),
-      },
-      settings: {
-        realtime: { enabled: false, provider: "firebase", firebaseConfig: {} },
-        ...(parsed.settings || {}),
       },
     };
   } catch {
@@ -264,18 +257,7 @@ const rolePins = {
 };
 
 const appConfig = typeof window !== "undefined" && window.APP_CONFIG && typeof window.APP_CONFIG === "object" ? window.APP_CONFIG : {};
-
-const getRealtimeConfig = () => {
-  const base = appConfig.realtime && typeof appConfig.realtime === "object" ? appConfig.realtime : {};
-  const s = state?.settings?.realtime && typeof state.settings.realtime === "object" ? state.settings.realtime : {};
-  const provider = s.provider || base.provider || "firebase";
-  const enabled = Boolean(s.enabled ?? base.enabled);
-  const firebaseConfig =
-    (s.firebaseConfig && typeof s.firebaseConfig === "object" ? s.firebaseConfig : null) ||
-    (base.firebaseConfig && typeof base.firebaseConfig === "object" ? base.firebaseConfig : null) ||
-    {};
-  return { provider, enabled, firebaseConfig };
-};
+const realtimeConfig = appConfig.realtime && typeof appConfig.realtime === "object" ? appConfig.realtime : {};
 
 const realtime = {
   enabled: false,
@@ -288,10 +270,14 @@ const realtime = {
   lastError: "",
 };
 
-const isRealtimeEnabled = () => {
-  const cfg = getRealtimeConfig();
-  return Boolean(cfg && cfg.enabled && cfg.provider === "firebase" && cfg.firebaseConfig && cfg.firebaseConfig.projectId);
-};
+const isRealtimeEnabled = () =>
+  Boolean(
+    realtimeConfig &&
+      realtimeConfig.enabled &&
+      realtimeConfig.provider === "firebase" &&
+      realtimeConfig.firebaseConfig &&
+      realtimeConfig.firebaseConfig.projectId
+  );
 
 const tsToIso = (v) => (v && typeof v.toDate === "function" ? v.toDate().toISOString() : v || null);
 
@@ -348,7 +334,7 @@ const stopRealtime = () => {
 
 const initRealtime = async () => {
   stopRealtime();
-  const cfg = getRealtimeConfig();
+  const cfg = realtimeConfig;
   await dbgReport(
     "initRealtime:start",
     {
@@ -595,44 +581,8 @@ const resetDemo = () => {
   localStorage.removeItem(STORAGE_KEY);
   state = loadState();
   applyIncomingQr();
-  applyIncomingRealtimeConfig();
   render();
   toast("Data demo direset");
-};
-
-const encodeB64Url = (str) => {
-  const b64 = btoa(unescape(encodeURIComponent(`${str || ""}`)));
-  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-};
-
-const decodeB64Url = (b64url) => {
-  const s = `${b64url || ""}`.replace(/-/g, "+").replace(/_/g, "/");
-  const pad = s.length % 4 ? "=".repeat(4 - (s.length % 4)) : "";
-  const b64 = s + pad;
-  return decodeURIComponent(escape(atob(b64)));
-};
-
-const encodeRealtimeToken = (firebaseConfig) => encodeB64Url(JSON.stringify(firebaseConfig || {}));
-
-const applyIncomingRealtimeConfig = () => {
-  const url = new URL(location.href);
-  const token = url.searchParams.get("rtc") || "";
-  if (!token) return;
-  try {
-    const raw = decodeB64Url(token);
-    const cfg = JSON.parse(raw);
-    if (!cfg || typeof cfg !== "object" || !cfg.projectId) throw new Error("invalid");
-    state.settings = {
-      ...(state.settings || {}),
-      realtime: { enabled: true, provider: "firebase", firebaseConfig: cfg },
-    };
-    saveState(state);
-    url.searchParams.delete("rtc");
-    history.replaceState(null, "", url.toString());
-    toast("Realtime siap digunakan");
-  } catch {
-    toast("Realtime config dari link tidak valid");
-  }
 };
 
 const applyIncomingQr = () => {
@@ -662,7 +612,6 @@ const applyIncomingQr = () => {
 };
 
 applyIncomingQr();
-applyIncomingRealtimeConfig();
 
 const menuById = (id) => state.menu.find((m) => m.id === id);
 
@@ -1878,18 +1827,12 @@ const renderAdmin = () => {
     return "";
   }
 
-  const rtCfg = getRealtimeConfig();
   const baseUrl = `${location.origin}${location.pathname}`;
-  const rtcParam =
-    rtCfg && rtCfg.enabled && rtCfg.firebaseConfig && rtCfg.firebaseConfig.projectId
-      ? `?rtc=${encodeURIComponent(encodeRealtimeToken(rtCfg.firebaseConfig))}`
-      : "";
-  const baseUrlWithRtc = `${baseUrl}${rtcParam}`;
   const roleLinks = {
-    customer: `${baseUrlWithRtc}#/`,
-    cashier: `${baseUrlWithRtc}#/cashier`,
-    kitchen: `${baseUrlWithRtc}#/kitchen`,
-    admin: `${baseUrlWithRtc}#/admin`,
+    customer: `${baseUrl}#/`,
+    cashier: `${baseUrl}#/cashier`,
+    kitchen: `${baseUrl}#/kitchen`,
+    admin: `${baseUrl}#/admin`,
   };
 
   const imageEditing = state.ui.adminImageMenuId ? menuById(state.ui.adminImageMenuId) : null;
@@ -2082,38 +2025,6 @@ const renderAdmin = () => {
               <div class="kpi__value">${kpi.unpaidOrders}</div>
             </div>
           </div>
-          <div class="sep"></div>
-          <section class="card">
-            <div class="card__hd">
-              <div>
-                <div class="card__title">Sinkron Antar Perangkat (Realtime)</div>
-                <div class="card__sub">Agar pesanan pelanggan muncul di Kasir & Dapur dari perangkat lain.</div>
-              </div>
-              <span class="badge ${realtime.ready ? "badge--ok" : rtCfg.enabled ? "badge--warn" : ""}">${
-    realtime.ready ? "Aktif" : rtCfg.enabled ? "Belum aktif" : "Nonaktif"
-  }</span>
-            </div>
-            <div class="card__bd">
-              <form data-form="realtime-setup" style="display:flex;flex-direction:column;gap:12px">
-                <div class="row" style="align-items:center;justify-content:space-between;flex-wrap:wrap">
-                  <label style="display:flex;gap:10px;align-items:center">
-                    <input type="checkbox" name="enabled" ${rtCfg.enabled ? "checked" : ""} />
-                    <span class="badge">Realtime</span>
-                  </label>
-                  <button class="btn btn--primary" type="submit">Simpan & Terapkan</button>
-                </div>
-                <div class="field">
-                  <label>Firebase Config (JSON)</label>
-                  <textarea class="input" name="firebaseConfig" rows="8" placeholder='{"apiKey":"...","authDomain":"...","projectId":"...","storageBucket":"...","messagingSenderId":"...","appId":"..."}'>${escapeHtml(
-                    JSON.stringify(rtCfg.firebaseConfig || {}, null, 2)
-                  )}</textarea>
-                </div>
-                <div class="muted" style="font-size:13px;line-height:1.45">
-                  Pastikan Firestore sudah aktif. Jika rule masih ketat (permission-denied), realtime tidak akan jalan.
-                </div>
-              </form>
-            </div>
-          </section>
           <div class="sep"></div>
           <section class="card">
             <div class="card__hd">
@@ -3592,49 +3503,6 @@ document.addEventListener("submit", async (e) => {
     saveState(state);
     upsertCartLine({ menuId, variantText, itemNote, qtyDelta: qty });
     toast("Ditambahkan ke keranjang");
-    return;
-  }
-
-  if (type === "realtime-setup") {
-    const enabled = Boolean(form.enabled?.checked);
-    const raw = `${form.firebaseConfig?.value || ""}`.trim();
-    let firebaseConfig = {};
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== "object") throw new Error("Format JSON tidak valid");
-        firebaseConfig = parsed;
-      } catch {
-        toast("Firebase Config harus JSON yang valid");
-        return;
-      }
-    }
-
-    state.settings = {
-      ...(state.settings || {}),
-      realtime: { enabled, provider: "firebase", firebaseConfig },
-    };
-    saveState(state);
-
-    if (!enabled) {
-      stopRealtime();
-      renderNav();
-      render();
-      toast("Realtime dimatikan");
-      return;
-    }
-
-    if (!firebaseConfig || !firebaseConfig.projectId) {
-      stopRealtime();
-      renderNav();
-      render();
-      toast("Isi firebaseConfig yang benar (projectId wajib)");
-      return;
-    }
-
-    await initRealtime();
-    renderNav();
-    render();
     return;
   }
 
