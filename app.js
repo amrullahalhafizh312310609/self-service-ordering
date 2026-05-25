@@ -89,6 +89,8 @@ const imageFileToDataUrl = async (file, { maxSide = 900, quality = 0.82 } = {}) 
   }
 };
 
+const isDataImageUrl = (value) => /^data:image\//i.test(`${value || ""}`);
+
 const uid = () => {
   const raw = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   return raw.toUpperCase();
@@ -1834,6 +1836,11 @@ const renderAdmin = () => {
   };
 
   const imageEditing = state.ui.adminImageMenuId ? menuById(state.ui.adminImageMenuId) : null;
+  const imageUrlValue = imageEditing && !isDataImageUrl(imageEditing.image) ? `${imageEditing.image || ""}` : "";
+  const imageUrlPlaceholder =
+    imageEditing && isDataImageUrl(imageEditing.image)
+      ? "Sudah ada upload gambar. Masukkan URL baru bila ingin ganti."
+      : "https://... (opsional)";
   const imageModal = imageEditing
     ? `
       <div class="modal">
@@ -1855,11 +1862,16 @@ const renderAdmin = () => {
         imageEditing.name
       )}" loading="lazy" />
                 <div class="addgrid__meta">
+                  ${
+                    isDataImageUrl(imageEditing.image)
+                      ? `<div class="row"><span class="badge badge--ok">Gambar tersimpan (upload)</span><span class="badge">Gunakan Upload untuk ganti</span></div><div class="sep"></div>`
+                      : ""
+                  }
                   <div class="row">
                     <div class="field" style="flex:1">
                       <label>Gambar (URL)</label>
-                      <input class="input" id="admin-image-url" inputmode="url" placeholder="https://... (opsional)" value="${escapeHtml(
-                        imageEditing.image || ""
+                      <input class="input" id="admin-image-url" inputmode="url" placeholder="${escapeHtml(imageUrlPlaceholder)}" value="${escapeHtml(
+                        imageUrlValue
                       )}" />
                     </div>
                   </div>
@@ -3354,13 +3366,17 @@ document.addEventListener("click", async (e) => {
     const variantsRaw = window.prompt("Variasi (opsional). Format: Nama:opsi1|opsi2, Nama2:opsi1|opsi2", variantsToText(m.variants));
     if (variantsRaw == null) return;
     const variants = parseVariantsInput(variantsRaw);
-    const imageRaw = window.prompt("Gambar (URL). Kosongkan untuk hapus:", m.image || "");
+    const imageDefault = isDataImageUrl(m.image) ? "" : m.image || "";
+    const imageRaw = window.prompt('Gambar (URL). Kosongkan untuk tetap. Isi "-" untuk hapus:', imageDefault);
     if (imageRaw == null) return;
     m.name = name.trim();
     m.price = Math.round(price);
     m.stock = Math.round(stock);
     m.variants = variants;
-    m.image = `${imageRaw}`.trim() || null;
+    const nextImage = `${imageRaw}`.trim();
+    if (nextImage === "-") m.image = null;
+    else if (!nextImage) m.image = m.image;
+    else m.image = nextImage;
     if (isRealtimeEnabled())
       await rtUpdateMenu(m.id, { name: m.name, price: m.price, stock: m.stock, variants: m.variants, image: m.image });
     saveState(state);
