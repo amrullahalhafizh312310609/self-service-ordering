@@ -1152,9 +1152,7 @@ const renderNav = () => {
   const subtitleRole = role === "guest" ? "Pelanggan" : role.toUpperCase();
   const subtitleMethod = state.session.method ? method : "Belum pilih metode";
   const rtLabel = realtime.ready ? "Realtime: On" : "Realtime: Off";
-  const rtHint = !realtime.ready && realtime.lastError ? ` (${realtime.lastError})` : "";
-  $subtitle.textContent =
-    role === "guest" ? `${subtitleRole} · ${subtitleMethod} · ${rtLabel}${rtHint}` : `${subtitleRole} · ${rtLabel}${rtHint}`;
+  $subtitle.textContent = role === "guest" ? `${subtitleRole} · ${subtitleMethod} · ${rtLabel}` : `${subtitleRole} · ${rtLabel}`;
 };
 
 const renderHome = () => {
